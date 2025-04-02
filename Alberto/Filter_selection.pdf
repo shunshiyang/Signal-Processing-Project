@@ -1,0 +1,86 @@
+1. Butterworth 4th Order
+Advantages:
+
+Maximally flat passband (no ripple)
+
+Smooth phase response
+
+Simple implementation
+
+Numerically stable
+
+Disadvantages:
+
+Gradual roll-off (≈40dB attenuation at 0-5Hz)
+
+Requires higher order for sharp transitions
+
+2. Butterworth 8th Order
+Advantages:
+
+≈80dB attenuation at 0-5Hz
+
+Still maintains no passband ripple
+
+Better stopband rejection than 4th order
+
+Disadvantages:
+
+Increased phase distortion
+
+Slightly higher computational cost
+
+Potential stability issues in fixed-point implementations
+
+3. Chebyshev Type I 6th Order (0.1dB ripple)
+Advantages:
+
+≈100dB attenuation at 0-5Hz
+
+Sharper transition than Butterworth
+
+Lower order needed for similar attenuation
+
+Disadvantages:
+
+0.1dB passband ripple
+
+Non-linear phase response
+
+More sensitive to coefficient quantization
+
+4. Elliptic 4th Order (0.1dB ripple, 60dB attenuation)
+Advantages:
+
+≈120dB attenuation at 0-5Hz
+
+Sharpest transition of all
+
+Lowest order needed
+
+Disadvantages:
+
+Ripple in both passband and stopband
+
+Worst phase linearity
+
+Complex design
+
+5. Cascade: 6th Order Highpass (5Hz) + 6th Order Lowpass (24.9Hz)
+Advantages:
+
+≈120dB attenuation at 0-5Hz
+
+No passband ripple
+
+Independent control of cutoffs
+
+Better phase response than elliptic/Chebyshev
+
+Disadvantages:
+
+Requires two filtering operations
+
+Slightly higher latency
+
+More parameters to tune
