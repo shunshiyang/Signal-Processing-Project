@@ -1,8 +1,6 @@
 1. Butterworth 4th Order
 Advantages:
-
 Maximally flat passband (no ripple)
-
 Smooth phase response
 
 Simple implementation
