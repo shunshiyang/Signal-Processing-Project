@@ -1,0 +1,38 @@
+clc; clear; close all;
+
+%% Settings
+numSubjects = 5;
+featureFolder = "Features\"; % make sure this matches your save path
+
+% Initialize containers
+allFeatures_adp = [];
+allLabels = [];
+
+%% Loop through all subjects
+for subj = 1:numSubjects
+    % Construct file path
+    ecgFile = sprintf('%sS%d_Features.mat', featureFolder, subj);
+
+    if isfile(ecgFile)
+        % Load the saved table
+        data = load(ecgFile, 'featureTable');
+        featureTable = data.featureTable;
+
+        % Extract features and labels
+        features_ecg = table2array(featureTable(:, 1:end-1));  % all but last column
+        labels_ecg = table2array(featureTable(:, end));        % last column (SleepStage)
+
+        % Concatenate across subjects
+        allFeatures_adp = [allFeatures_adp; features_ecg];
+        allLabels = [allLabels; labels_ecg];
+
+        fprintf('Loaded Subject %d | Features: [%d x %d]\n', subj, size(features_ecg));
+    else
+        warning('%s not found. Skipping...', ecgFile);
+    end
+    
+end
+
+% Combine features and labels into one matrix
+allData = [allFeatures_adp, allLabels];
+save('AllSubjects_FeatureMatrix.mat', 'allData');
