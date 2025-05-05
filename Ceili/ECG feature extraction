@@ -1,50 +1,644 @@
-clc; clear; close all;
+clc; close all; clear;
 
-%% Settings
-numSubjects = 10;
-featureFolder = "Features\"; % make sure this matches your save path
 
-% Initialize containers
-allFeatures_adp = [];
-allLabels = [];
+% Load ECG Data
+dataFolder = 'Data/';
+FeatureFolder = 'Features/';
+subjectIDs = 1:10; % Example: Subject 1
+allFeatures = [];
 
-%% Loop through all subjects
-for subj = 1:numSubjects
-    % Construct file path
-    ecgFile = sprintf('%sS%d_Features.mat', featureFolder, subj);
+for subj = subjectIDs
+    edfFilename = sprintf('%sR%d.edf', dataFolder, subj);
+    xmlFilename = sprintf('%sR%d.xml', dataFolder, subj);
+    [hdr, record] = edfread(edfFilename);
+    [events, stages, epochLength, annotation] = readXML(xmlFilename);
 
-    if isfile(ecgFile)
-        % Load the saved table
-        data = load(ecgFile, 'featureTable');
-        featureTable = data.featureTable;
+    %% Plot Control
+    toPlotFiltering = false;  
+    toPlotRR_QRS = false;
+    toPlotRRAnalysis = false;
 
-        % Extract features and labels
-        features_ecg = table2array(featureTable(:, 1:end-1));  % all but last column
-        labels_ecg = table2array(featureTable(:, end));        % last column (SleepStage)
-
-        % Concatenate across subjects
-        allFeatures_adp = [allFeatures_adp; features_ecg];
-        allLabels = [allLabels; labels_ecg];
-
-        fprintf('Loaded Subject %d | Features: [%d x %d]\n', subj, size(features_ecg));
-    else
-        warning('%s not found. Skipping...', ecgFile);
+    % Locate ECG Channels
+    ecg_indices = find(contains(hdr.label, 'ECG', 'IgnoreCase', true)); % Get indices of ECG channels
+    if isempty(ecg_indices)
+        fprintf('ECG not found for %s\n', edfFilename);
+        continue;
     end
-    % disp(['Size of labels for Subject ', num2str(subj), ': ', num2str(size(labels_ecg))]);
-    % 
-    % disp(['Size of features for Subject ', num2str(subj), ': ', num2str(size(features_ecg))]);
+
+    % Sampling frequency
+    Fs = hdr.samples(ecg_indices(1)); % ECG sampling frequency
+    %disp(['Sampling Frequency: ', num2str(Fs)]);
+    numEpochs = floor(length(record(ecg_indices(1), :)) / (30 * Fs)); % Total number of epochs
+
+ 
+    % Set number of epochs to process (e.g., 10 epochs = 5 minutes)
+    %numEpochsToPlot = 500; % First 10 epochs (adjustable)
+    numEpochsToPlot = numEpochs; % Whole signal
+
+    % disp(['Size of stages array: ', num2str(size(stages))]); % Check how many values exist
+    % disp(['First 50 sleep stages: ', num2str(stages(1:min(50, length(stages))))]);
+
+    % for epoch = 1:numEpochsToPlot
+    %     % Extract Epoch
+    %     startIdx = (epoch - 1) * Fs * 30 + 1;
+    %     endIdx = min(startIdx + 30 * Fs - 1, size(record, 2)); 
+    %     signalECG = record(ecg_indices(1), startIdx:endIdx);
+    % % 
+    %     % % Print all sleep stages for a subject
+    %     sleepStageTable = table((1:numEpochsToPlot)', stages(1:numEpochsToPlot)', 'VariableNames', {'Epoch', 'SleepStage'});
+    %     disp(sleepStageTable);
+    % end
 
     
+
+    % Initialize Preprocessed Signals
+    combinedRawECG = [];
+    combined_avg_filter = [];
+    combined_Butterworth_filter = [];
+
+    %% Preprocessing Loop
+    for epoch = 1:numEpochsToPlot
+        % Extract Epoch
+        startIdx = (epoch - 1) * Fs * 30 + 1;
+        endIdx = min(startIdx + 30 * Fs - 1, size(record, 2)); 
+        signalECG = record(ecg_indices(1), startIdx:endIdx);
+
+
+      %% STEP 1:
+      %% Low-Pass Filter for Aliasing Prevention & Upper-Frequency Cutoff
+
+        %% Method 1: Moving Average Filter  
+        % % Define cutoff frequency (150 Hz based on study recommendations)
+        lowPassCutoff = 150;
+        windowSize = round(Fs / lowPassCutoff); % Define window size
+        filteredECG = movmean(signalECG, windowSize);
+
+
+        % %% Method 2: Chebyshev Type II LPF
+        % filterOrder = 4;
+        % disp(['Sampling Frequency: ', num2str(Fs)]);
+        % %cutt off frequency forced to be less than half the sampling freq
+        % lpcutoff = Fs/2 -1;
+        % disp(['Low pass cutoff ', num2str(lpcutoff)]);
+        % % Design Chebyshev Type II filter (with ripple suppression)
+        % [b, a] = cheby2(filterOrder, 40, lpcutoff  / (Fs/2), 'low');
+        % % Apply filtering
+        % filteredECG2 = filtfilt(b, a, signalECG);
+
+        %% Method 2: ButterqorthLPF
+        filterOrder = 4; % Lower order prevents excessive delay
+        lpcutoff = Fs/2 -1; % Cutoff frequency forced to be less than half the sampling freq
+        
+        % Design Butterworth filter
+        [b, a] = butter(filterOrder, lpcutoff / (Fs/2), 'low');
+        
+        % Apply filtering
+        filteredECG2 = filtfilt(b, a, signalECG);
+
+      %% STEP 2:
+      %% High-Pass filter for Baseline Wander Suppression
+
+        %% High-Pass Filter for Baseline Wander Removal
+        % Define cutoff frequency based on AHA guidelines according to paper (see notes)
+        highPassCutoff = 0.67;
+        
+        % Design Butterworth high-pass filter
+        filterOrder2 = 4; % Keep order low to prevent unnecessary signal delay
+        [b, a] = butter(filterOrder2, highPassCutoff / (Fs/2), 'high'); % Normalized frequency
+        
+        % Apply zero-phase filtering to avoid phase distortion
+        filteredECG_HP_avg = filtfilt(b, a, filteredECG); % Apply HPF to Moving Average filtered ECG
+        filteredECG_HP_butter = filtfilt(b, a, filteredECG2); % Apply HPF to Butterworth filtered ECG
+       
+      %% STEP 3:
+      %% 50 Hz Power Line-Frequency Noise Suppression
+      %Should be 50 or 60? check
+
+        notchFilter = designfilt('bandstopiir', 'FilterOrder', 2, ...
+                                 'HalfPowerFrequency1', 49, ...
+                                 'HalfPowerFrequency2', 51, ...
+                                 'SampleRate', Fs); 
+        
+        % Apply notch filtering to the already high-pass filtered signals
+        filteredECG_Notch_avg = filtfilt(notchFilter, filteredECG_HP_avg); 
+        filteredECG_Notch_butter = filtfilt(notchFilter, filteredECG_HP_butter);
+
+      %% STEP 4:
+      %% Removing Muscle Artifacts & High-Frequency Noise
+
+        % Define polynomial order and window size for smoothing
+        polyOrder = 3;
+        windowSize = 11; % Ensure window size is odd
+        
+        % Apply Savitzky-Golay filter
+        filteredECG_Artifact_SG_avg = sgolayfilt(filteredECG_Notch_avg, polyOrder, windowSize);
+        filteredECG_Artifact_SG_butter = sgolayfilt(filteredECG_Notch_butter, polyOrder, windowSize);
+        
+        %% Savitzky-Golay does a better job suppressing noise. Selected.
+        % % Set wavelet parameters
+        % waveletType = 'db4'; % Daubechies 4 wavelet (good for ECG)
+        % decompLevel = 4; % 4-level decomposition
+        % 
+        % % Apply wavelet denoising
+        % filteredECG_Artifact_Wavelet_avg = wdenoise(filteredECG_Notch_avg, decompLevel, 'Wavelet', waveletType);
+        % filteredECG_Artifact_Wavelet_butter = wdenoise(filteredECG_Notch_butter, decompLevel, 'Wavelet', waveletType);
+
+        %% Concatenate Signals for Continuous Output
+        combinedRawECG = [combinedRawECG; signalECG(:)];
+        combined_avg_filter = [combined_avg_filter; filteredECG_Artifact_SG_avg(:)];
+        combined_Butterworth_filter = [combined_Butterworth_filter; filteredECG_Artifact_SG_butter(:)];
+    end
+
+
+      
+
+    if toPlotFiltering
+        %% Time Vector for Continuous Signal
+        t = (0:length(combinedRawECG)-1) / Fs;
+    
+        %% Comparison of Filtering Methods
+        snrECG = snr(combinedRawECG);
+        snrAvgECG = snr(combined_avg_filter);
+        snrButterworthECG = snr(combined_Butterworth_filter);
+        fprintf('ECG - SNR (Standard Filtering): %.2f dB\n', snrECG);
+        fprintf('ECG - SNR (Standard Filtering): %.2f dB\n', snrAvgECG);
+        fprintf('ECG - SNR (Adaptive Filtering): %.2f dB\n', snrButterworthECG);
+    
+        %% Plot Comparison
+        figure;
+        subplot(3,1,1);
+        plot(t, combinedRawECG);
+        title('Raw ECG Signal');
+        xlabel('Time (s)');
+        ylabel('Amplitude');
+    
+        subplot(3,1,2);
+        plot(t, combined_avg_filter);
+        title('Moving Average Filtered ECG Signal');
+        xlabel('Time (s)');
+        ylabel('Amplitude');
+    
+        subplot(3,1,3);
+        plot(t, combined_Butterworth_filter);
+        title('Butterworth Filtered ECG Signal');
+        xlabel('Time (s)');
+        ylabel('Amplitude');
+    
+        %% Frequency-Domain Analysis
+        [pxxAvg, f] = pwelch(combined_avg_filter, [], [], [], Fs);
+        [pxxButterworth, ~] = pwelch(combined_Butterworth_filter, [], [], [], Fs);
+    
+        
+        figure;
+        plot(f, 10*log10(pxxAvg), 'b');
+        hold on;
+        plot(f, 10*log10(pxxButterworth), 'r');
+        title('ECG Power Spectral Density');
+        xlabel('Frequency (Hz)');
+        ylabel('Power (dB)');
+        legend('Moving Average Filtering', 'ButterworthFiltering');
+    end
+
+    %% Feature Extraction
+
+    %% Step 1: Time Domain
+
+    %% QRS Detection (for R-R interval, HR and QT interval)
+    %step 1, from clecture notes: Bandpass filter
+    %QRS complex typically ranges from ~10-25 Hz
+    % Define updated bandpass cutoff frequencies (10-25 Hz)
+    lowCutoff = 10;
+    highCutoff = 25;
+    filterOrder = 4;
+    
+    % Design Butterworth Bandpass Filter
+    [b, a] = butter(filterOrder, [lowCutoff, highCutoff] / (Fs/2), 'bandpass');
+    
+    % Apply zero-phase filtering
+    filteredECG_Bandpass = filtfilt(b, a, combined_avg_filter);
+
+    % Step2: Derivative and Squaring
+
+    % Apply five-point derivative to enhance QRS slope information
+     %Purpose: The derivative helps emphasize sharp transitions, making QRS slopes more pronounced.
+    diffECG = diff(filteredECG_Bandpass); % First-order derivative
+    % Apply squaring function to amplify QRS features
+    squaredECG = diffECG.^2;
+ 
+    
+    %Step 3: Moving average filter
+
+    % Define window size (optimized for QRS detection)
+    windowSize = round(0.2 * Fs); % ~200ms window
+
+
+    % Apply moving window integration
+    integratedECG = movmean(squaredECG, windowSize);
+
+
+    %Step 4: Fiducial Mark Calculation
+
+    % Define threshold for fiducial mark detection
+    %threshold = 0.15 * max(integratedECG);
+
+    windowSize = Fs * 10; % 10-second window
+    threshold = movmax(integratedECG, [windowSize 0]) * 0.15;
+    
+
+    
+    % Find where the signal crosses the threshold
+    aboveThreshold = integratedECG > threshold;
+    
+   
+    % % Identify rising and falling edges
+    risingEdge = find(diff(aboveThreshold) == 1); % Locations where signal first exceeds threshold
+    fallingEdge = find(diff(aboveThreshold) == -1); % Locations where signal drops below threshold
+    % 
+    % % Fiducial Mark: Assign QRS temporal location between rising & falling edges
+    % fiducialMarks = round((risingEdge + fallingEdge) / 2);
+
+    % Safety check: Ensure matching number of edges
+    minLen = min(length(risingEdge), length(fallingEdge));
+    risingEdge = risingEdge(1:minLen);
+    fallingEdge = fallingEdge(1:minLen);
+    
+    % Calculate fiducial marks
+    fiducialMarks = round((risingEdge + fallingEdge) / 2);
+
+    % validPairs = fallingEdge > risingEdge;
+    % fiducialMarks = round((risingEdge(validPairs) + fallingEdge(validPairs)) / 2);
+
+
+    %Step 5: Decision Rules
+        
+    %RR interval Validation:
+    % Reject peaks if RR intervals are outside physiological limits (e.g., HR below 30 BPM or above 200 BPM).
+   %% Feature 1: RR Intervals
+    validRR = diff(fiducialMarks) / Fs; % Convert intervals to seconds THIS IS THE RR INTERVAL FEATURE
+    fiducialMarks = fiducialMarks(validRR > 0.3 & validRR < 2.0); % Only keep valid RR intervals
+    %disp(['Number of fiducial marks detected: ', num2str(length(fiducialMarks))]);
+
+
+    %Refractory Period Check
+    %Eliminate peaks detected too close together (< 200ms apart) (300ms would be 200BPM so 200ms is more than safe to use
+
+    %% Feature 2: QRS complex
+    fiducialMarks = fiducialMarks([true; diff(fiducialMarks) > round(0.2 * Fs)]); %FifucialMarks is the QRS complex FEATURE
+    %disp(['Number of fiducial marks detected 2: ', num2str(length(fiducialMarks))]);
+
+
+    %Plot QRS detection
+    % Select a 5-second interval for visualization
+    startIdx = round(10 * Fs); % Start at second 10 (adjustable)
+    endIdx = startIdx + round(5 * Fs) - 1; % 5-second window
+    
+
+
+    % Extract the filtered ECG segment
+    ecgSegment = integratedECG(startIdx:endIdx);
+    tSegment = (0:length(ecgSegment)-1) / Fs;
+    
+    % Detect peaks in the extracted segment
+    [~, rLocs] = findpeaks(ecgSegment, 'MinPeakHeight', max(ecgSegment) * 0.4);
+    rPeaksTimes = tSegment(rLocs);
+    
+    % % Plot the segment with detected R-peaks
+    % figure;
+    % plot(tSegment, ecgSegment, 'b'); hold on;
+    % plot(rPeaksTimes, ecgSegment(rLocs), 'ro', 'MarkerFaceColor', 'r'); % Highlight peaks
+    % title('QRS Detection - 5-Second ECG Segment');
+    % xlabel('Time (s)');
+    % ylabel('Amplitude');
+    % legend('Filtered ECG', 'Detected QRS Peaks');
+
+    % Calculate which marks are within the current segment
+    segmentMarks = fiducialMarks(fiducialMarks >= startIdx & fiducialMarks <= endIdx);
+    
+    % Convert global indices to local segment indices
+    localMarks = segmentMarks - startIdx + 1;
+    
+    % % Plot only local fiducial marks
+    % figure;
+    % plot(tSegment, filteredECG_Bandpass(startIdx:endIdx), 'b'); hold on;
+    % plot(tSegment(localMarks), filteredECG_Bandpass(startIdx + localMarks - 1), 'ro', 'MarkerFaceColor', 'r');
+    % title('QRS Detection with Fiducial Marks');
+    % xlabel('Time (s)');
+    % ylabel('Amplitude');
+    % legend('Filtered ECG', 'Fiducial Marks');
+
+    
+
+    if toPlotRR_QRS 
+        %Helps to confirm variation is reasonable
+        figure;
+        histogram(validRR, 'BinWidth', 0.05); % Bin width = 50ms
+        title('Distribution of RR Intervals');
+        xlabel('Interval (seconds)');
+        ylabel('Frequency');
+    
+        windowLength = round(0.2 * Fs); % Round to nearest integer
+        halfWindow = round(windowLength / 2); % Ensure indexing uses integers   ; % Define a 200ms window around each QRS peak
+        %qrsSegments = arrayfun(@(x) filteredECG_Bandpass(max(1, x-windowLength/2) : min(length(filteredECG_Bandpass), x+windowLength/2)), fiducialMarks, 'UniformOutput', false);
+        qrsSegments = arrayfun(@(x) filteredECG_Bandpass(max(1, x-halfWindow) : min(length(filteredECG_Bandpass), x+halfWindow)), fiducialMarks, 'UniformOutput', false);
+        figure;
+        numPlots = min(6, length(qrsSegments)); % Show up to 6 QRS complexes
+        for i = 1:numPlots
+            subplot(2,3,i);
+            plot(qrsSegments{i}, 'b'); % Blue line for individual QRS
+            title(['QRS Complex ', num2str(i)]);
+            xlabel('Time (samples)');
+            ylabel('Amplitude');
+        end
+    end
+
+    %% Feature 3: Mean RR Interval per Epoch
+    meanRR_perEpoch = NaN(1, numEpochsToPlot); % Initialize with NaNs for empty epochs
+    
+    %% Feature 4: SDNN (Standard deveation of RR per epoch)
+    sdnn_perEpoch = NaN(1, numEpochsToPlot); % Initialize with NaNs
+    
+    %% Feature 5: pNN50 (percent of consecutive RR intervals differing by more than 50ms)
+    %Higher pNN50 values suggest greater parasympathetic activity, often linked to deep sleep.
+    %Lower values indicate reduced short-term HRV, common in stress or wakeful states.
+    pNN50_perEpoch = NaN(1, numEpochsToPlot); % Initialize with NaNs
+
+    %% Feature 6: RMSSD (Root mean square of successive RR differences)
+    %higher RMSSD suggests greater parasympathetic activity which is more common in deep sleep
+    rmssd_perEpoch = NaN(1, numEpochsToPlot);
+
+    %% Feature 7: Heart Rate
+    hr_perEpoch = NaN(1, numEpochsToPlot); % Initialize array
+
+    %% Feature 8: Poincare Features per epoch (short term, long term RR variability and ratio)
+    sd1_perEpoch = NaN(1, numEpochsToPlot);
+    sd2_perEpoch = NaN(1, numEpochsToPlot);
+    sdRatio_perEpoch = NaN(1, numEpochsToPlot);
+
+    % --- Epoch-based Feature Extraction ---
+
+    for epoch = 1:numEpochsToPlot
+        startIdx = (epoch - 1) * 30 * Fs + 1;
+        endIdx = startIdx + 30 * Fs - 1;
+
+
+        % Fiducial marks within this epoch
+        fiducialsInEpoch = fiducialMarks(fiducialMarks >= startIdx & fiducialMarks <= endIdx);
+
+    
+        if length(fiducialsInEpoch) < 2
+            fprintf("Epoch %d skipped (only %d RR peaks)\n", epoch, length(fiducialsInEpoch));
+            continue;
+        end
+    
+        rr = diff(fiducialsInEpoch) / Fs;
+    
+        % Store features
+        meanRR_perEpoch(epoch) = mean(rr);
+        sdnn_perEpoch(epoch) = std(rr);
+        pNN50_perEpoch(epoch) = sum(abs(diff(rr)) > 0.05) / length(rr) * 100;
+        rmssd_perEpoch(epoch) = sqrt(mean(diff(rr).^2));
+        hr_perEpoch(epoch) = 60 / mean(rr);
+    
+        % Poincaré features
+        rr1 = rr(1:end-1);
+        rr2 = rr(2:end);
+        sd1 = sqrt(0.5 * std(rr2 - rr1)^2);
+        sd2 = sqrt(0.5 * std(rr2 + rr1)^2);
+        sd1_perEpoch(epoch) = sd1;
+        sd2_perEpoch(epoch) = sd2;
+        sdRatio_perEpoch(epoch) = sd2 / sd1;
+    
+        %fprintf("Epoch %d: HR = %.1f bpm, RR count = %d\n", epoch, hr_perEpoch(epoch), length(rr));
+    end
+
+
+
+
+    if toPlotRRAnalysis
+        % Display and plot the results
+        disp(['Mean RR Interval Per Epoch: ', num2str(meanRR_perEpoch)]);
+        disp(['NumEpochs: ', num2str(numEpochsToPlot)]);
+        figure;
+        plot(meanRR_perEpoch, '-o', 'MarkerFaceColor', 'b'); 
+        title('Mean RR Interval Per Epoch');
+        xlabel('Epoch Number');
+        ylabel('Mean RR Interval (sec)');
+        grid on;
+
+        % Display and plot results
+        disp(['SDNN Per Epoch: ', num2str(sdnn_perEpoch)]);
+        figure;
+        plot(sdnn_perEpoch, '-o', 'MarkerFaceColor', 'r');
+        title('SDNN Per Epoch');
+        xlabel('Epoch Number');
+        ylabel('SDNN (sec)');
+        grid on;
+
+        % Display and plot results
+        disp(['pNN50 Per Epoch: ', num2str(pNN50_perEpoch)]);
+        figure;
+        plot(pNN50_perEpoch, '-o', 'MarkerFaceColor', 'g');
+        title('pNN50 Per Epoch');
+        xlabel('Epoch Number');
+        ylabel('pNN50 (%)');
+        grid on;
+
+        % Display and plot results
+        disp(['RMSSD Per Epoch: ', num2str(rmssd_perEpoch)]);
+        figure;
+        plot(rmssd_perEpoch, '-o', 'MarkerFaceColor', 'm');
+        title('RMSSD Per Epoch');
+        xlabel('Epoch Number');
+        ylabel('RMSSD (sec)');
+        grid on;
+
+        % Display and plot results
+        disp(['SD1 Per Epoch: ', num2str(sd1_perEpoch)]);
+        disp(['SD2 Per Epoch: ', num2str(sd2_perEpoch)]);
+        disp(['SD1/SD2 Ratio Per Epoch: ', num2str(sdRatio_perEpoch)]);
+        figure;
+        subplot(3,1,1); plot(sd1_perEpoch, '-o', 'MarkerFaceColor', 'b'); title('SD1 Per Epoch'); ylabel('SD1');
+        subplot(3,1,2); plot(sd2_perEpoch, '-o', 'MarkerFaceColor', 'r'); title('SD2 Per Epoch'); ylabel('SD2');
+        subplot(3,1,3); plot(sdRatio_perEpoch, '-o', 'MarkerFaceColor', 'g'); title('SD1/SD2 Ratio Per Epoch'); xlabel('Epoch Number'); ylabel('Ratio');
+        grid on;
+
+            % Display and plot results
+        disp(['Heart Rate Per Epoch: ', num2str(hr_perEpoch)]);
+        figure;
+        plot(hr_perEpoch, '-o', 'MarkerFaceColor', 'c'); 
+        title('Heart Rate Per Epoch');
+        xlabel('Epoch Number');
+        ylabel('Heart Rate (BPM)');
+        grid on;
+
+    end
+
+ 
+
+
+    %% Step 2: Frequency Domain
+
+
+    %% Feature 9-11 Power spectral density
+    %% Welch (good this is what he wants)
+    % Initialize arrays for storing LF/HF power per epoch
+    % Frequency bands for HRV analysis
+    vlf_band = [0.003, 0.04];
+    lf_band = [0.04, 0.15];
+    hf_band = [0.15, 0.4];
+    
+    % Initialize arrays for frequency-domain features
+    vlf_power_perEpoch = NaN(1, numEpochsToPlot);
+    lf_power_perEpoch = NaN(1, numEpochsToPlot);
+    hf_power_perEpoch = NaN(1, numEpochsToPlot);
+    lf_hf_ratio_perEpoch = NaN(1, numEpochsToPlot);
+    
+    for epoch = 1:numEpochsToPlot
+        startIdx = (epoch - 1) * 30 * Fs + 1;
+        endIdx = startIdx + 30 * Fs - 1;
+    
+        % Get fiducials in this epoch
+        fiducialsInEpoch = fiducialMarks(fiducialMarks >= startIdx & fiducialMarks <= endIdx);
+    
+        if length(fiducialsInEpoch) < 3
+            continue;
+        end
+    
+        % RR intervals in seconds
+        rr = diff(fiducialsInEpoch) / Fs;
+        rrTimes = fiducialsInEpoch(2:end) / Fs;  % time locations (in seconds)
+    
+        % Interpolate RR intervals to evenly spaced time vector
+        Fs_interp = 4; % 4 Hz is standard for HRV
+        t_interp = startIdx/Fs : 1/Fs_interp : endIdx/Fs;
+        rr_interp = interp1(rrTimes, rr, t_interp, 'spline');
+    
+        % Remove NaNs after interpolation (edge cases)
+        rr_interp = rr_interp(~isnan(rr_interp));
+    
+        % Estimate PSD using Welch method
+        [psd, freq] = pwelch(rr_interp, [], [], [], Fs_interp);
+    
+        % Compute band powers
+        vlf_power = bandpower(psd, freq, vlf_band, 'psd');
+        lf_power = bandpower(psd, freq, lf_band, 'psd');
+        hf_power = bandpower(psd, freq, hf_band, 'psd');
+    
+        % Store features
+        vlf_power_perEpoch(epoch) = vlf_power;
+        lf_power_perEpoch(epoch) = lf_power;
+        hf_power_perEpoch(epoch) = hf_power;
+        lf_hf_ratio_perEpoch(epoch) = lf_power / hf_power;
+    end
+
+    % figure;
+    % plot(freq, 10*log10(psd));
+    % xlim([0 0.5]);
+    % xlabel('Frequency (Hz)');
+    % ylabel('Power (dB)');
+    % title(sprintf('Welch PSD - Epoch %d', epoch));
+
+
+
+    figure;
+    tiledlayout(3,2)
+    nexttile; plot(meanRR_perEpoch); title('Mean RR');
+    nexttile; plot(hr_perEpoch); title('HR');
+    nexttile; plot(sdnn_perEpoch); title('SDNN');
+    nexttile; plot(rmssd_perEpoch); title('RMSSD');
+    nexttile; plot(pNN50_perEpoch); title('pNN50');
+    nexttile; plot(sdRatio_perEpoch); title('SDRatio');
+
+
+
+    figure;
+    plot(fiducialMarks / Fs, ones(size(fiducialMarks)), 'ro');
+    title('Distribution of Fiducial Marks Over Time');
+    xlabel('Time (sec)');
+    ylabel('Detected QRS Peaks');
+
+
+
+%% Extract features and true sleep stages
+
+
+    % Recode stage 1 (N4) to stage 2 (N3) per AASM guidelines
+    stages(stages == 1) = 2;
+
+    % Pre-allocate
+    sleepStages_perEpoch = strings(1, numEpochsToPlot);  % use strings for labels
+    
+    % Convert 1s annotations into dominant 30s epoch labels using the function
+    %raw data has 1 stage per second, convert to find dominate sleep stage per epoch
+    sleepStages_perEpoch = getDominantEpochStage(stages, Fs, 30); % Now dominate sleep stage is assigned as epoch sleep stage true value
+    
+    % Ensure sleep stages are properly categorized
+    sleepStages_perEpoch = categorical(sleepStages_perEpoch); 
+    % Ensure sleepStages_perEpoch only includes the selected epochs
+    sleepStages_perEpoch = sleepStages_perEpoch(1:numEpochsToPlot); % Trim to match feature count
+
+    % Print first few sleep stage values for verification
+    %disp(table((1:numEpochsToPlot)', sleepStages_perEpoch(1:numEpochsToPlot)', 'VariableNames', {'Epoch', 'SleepStage'}));
+
+    % Print the first 10 sleep stage values from the original signal
+    %disp(['First 10 sleep stages from the original signal: ', num2str(stages(1:min(10, length(stages))))]);
+
+   
+
+    for epoch = 1:numEpochsToPlot
+        stageVal = str2double(string(sleepStages_perEpoch(epoch))); % Convert categorical safely
+    
+        if isnan(stageVal) % Catch any NaN cases
+            sleepStages_perEpoch(epoch) = categorical("Unknown");
+        else
+            switch stageVal
+                case 0
+                    sleepStages_perEpoch(epoch) = categorical("REM");
+                case 2
+                    sleepStages_perEpoch(epoch) = categorical("N3");
+                case 3
+                    sleepStages_perEpoch(epoch) = categorical("N2");
+                case 4
+                    sleepStages_perEpoch(epoch) = categorical("N1");
+                case 5
+                    sleepStages_perEpoch(epoch) = categorical("Wake");
+                otherwise
+                    sleepStages_perEpoch(epoch) = categorical("Unknown");
+            end
+        end
+    end
+    
+    %disp(table((1:numEpochsToPlot)', sleepStages_perEpoch(1:numEpochsToPlot)', 'VariableNames', {'Epoch', 'SleepStage'}));
+   
+    % Convert feature vectors to columns
+    featureTable = table( ...
+        meanRR_perEpoch(:), ...
+        sdnn_perEpoch(:), ...
+        pNN50_perEpoch(:), ...
+        rmssd_perEpoch(:), ...
+        hr_perEpoch(:), ...
+        sd1_perEpoch(:), ...
+        sd2_perEpoch(:), ...
+        sdRatio_perEpoch(:), ...
+        vlf_power_perEpoch(:), ...
+        lf_power_perEpoch(:), ...
+        hf_power_perEpoch(:), ...
+        lf_hf_ratio_perEpoch(:), ...
+        categorical(sleepStages_perEpoch(:)), ...  % descriptive stage names
+        'VariableNames', {'MeanRR', 'SDNN', 'pNN50', 'RMSSD', 'HR', ...
+                          'SD1', 'SD2', 'SDRatio', 'VLF Power', 'LF Power', ...
+                          'HF Power', 'LF/HF Ratio', 'SleepStage'});
+
+    % % Create a table with meaningful column names
+    % featureTable = array2table(featuresMatrix, ...
+    %     'VariableNames', {'MeanRR', 'SDNN', 'pNN50', 'RMSSD', 'HR', 'SD1', 'SD2', 'SDRatio', 'VLF Power','LF Power', 'HF Power', 'LF/HF Ratio' ,'SleepStage'});
+
+    % save as MAT
+    save(sprintf('%sS%d_Features.mat', FeatureFolder, subj), 'featureTable');
+
+
+    % disp(['Size of stages: ', num2str(size(stages))]); % Verify total count
+    % disp(['First few stage values: ', num2str(stages(1:min(10, length(stages))))]);
+    % disp(featureTable(1:10, :)); % Check first 10 rows for sleep stage correctness
 end
-
-% Combine features and labels into a table
-allDataTable = array2table(allFeatures_adp, ...
-    'VariableNames', featureTable.Properties.VariableNames(1:end-1));  % use same feature names
-
-% Add the categorical labels column
-allDataTable.SleepStage = allLabels;
-
-%disp(allDataTable(1:10, :)); % Print first 10 rows
-% Save the table
-save('AllSubjects_FeatureTable.mat', 'allDataTable');
 
