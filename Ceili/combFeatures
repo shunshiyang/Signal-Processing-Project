@@ -1,7 +1,7 @@
 clc; clear; close all;
 
 %% Settings
-numSubjects = 5;
+numSubjects = 10;
 featureFolder = "Features\"; % make sure this matches your save path
 
 % Initialize containers
@@ -30,9 +30,21 @@ for subj = 1:numSubjects
     else
         warning('%s not found. Skipping...', ecgFile);
     end
+    % disp(['Size of labels for Subject ', num2str(subj), ': ', num2str(size(labels_ecg))]);
+    % 
+    % disp(['Size of features for Subject ', num2str(subj), ': ', num2str(size(features_ecg))]);
+
     
 end
 
-% Combine features and labels into one matrix
-allData = [allFeatures_adp, allLabels];
-save('AllSubjects_FeatureMatrix.mat', 'allData');
+% Combine features and labels into a table
+allDataTable = array2table(allFeatures_adp, ...
+    'VariableNames', featureTable.Properties.VariableNames(1:end-1));  % use same feature names
+
+% Add the categorical labels column
+allDataTable.SleepStage = allLabels;
+
+%disp(allDataTable(1:10, :)); % Print first 10 rows
+% Save the table
+save('AllSubjects_FeatureTable.mat', 'allDataTable');
+
