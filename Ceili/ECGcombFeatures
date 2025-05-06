@@ -1,4 +1,4 @@
-clc; clear; close all;
+%clc; clear; close all;
 
 %% Settings
 numSubjects = 10;
@@ -11,7 +11,7 @@ allLabels = [];
 %% Loop through all subjects
 for subj = 1:numSubjects
     % Construct file path
-    ecgFile = sprintf('%sS%d_Features.mat', featureFolder, subj);
+    ecgFile = sprintf('%sS%d_ECGFeatures.mat', featureFolder, subj);
 
     if isfile(ecgFile)
         % Load the saved table
