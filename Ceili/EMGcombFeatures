@@ -1,0 +1,49 @@
+%clc; clear; close all;
+
+%% Settings
+numSubjects = 10;
+featureFolder = "EMGFeatures\"; % make sure this matches your save path
+
+% Initialize containers
+allFeatures_adp = [];
+allLabels = [];
+
+%% Loop through all subjects
+for subj = 1:numSubjects
+    % Construct file path
+    ecgFile = sprintf('%sS%d_EMG_Features.mat', featureFolder, subj);
+
+    if isfile(ecgFile)
+        % Load the saved table
+        data = load(ecgFile, 'featureTable');
+        featureTable = data.featureTable;
+
+        % Extract features and labels
+        features_ecg = table2array(featureTable(:, 1:end-1));  % all but last column
+        labels_ecg = table2array(featureTable(:, end));        % last column (SleepStage)
+
+        % Concatenate across subjects
+        allFeatures_adp = [allFeatures_adp; features_ecg];
+        allLabels = [allLabels; labels_ecg];
+
+        fprintf('Loaded Subject %d | Features: [%d x %d]\n', subj, size(features_ecg));
+    else
+        warning('%s not found. Skipping...', ecgFile);
+    end
+    % disp(['Size of labels for Subject ', num2str(subj), ': ', num2str(size(labels_ecg))]);
+    % 
+    % disp(['Size of features for Subject ', num2str(subj), ': ', num2str(size(features_ecg))]);
+
+    
+end
+
+% Combine features and labels into a table
+ECGallDataTable = array2table(allFeatures_adp, ...
+    'VariableNames', featureTable.Properties.VariableNames(1:end-1));  % use same feature names
+
+% Add the categorical labels column
+ECGallDataTable.SleepStage = allLabels;
+
+%disp(allDataTable(1:10, :)); % Print first 10 rows
+% Save the table
+save('AllSubjects_ECGFeatureTable.mat', 'ECGallDataTable');
