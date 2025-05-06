@@ -29,11 +29,24 @@ for subj = subjectIDs
     Fs = hdr.samples(ecg_indices(1)); % ECG sampling frequency
     %disp(['Sampling Frequency: ', num2str(Fs)]);
     numEpochs = floor(length(record(ecg_indices(1), :)) / (30 * Fs)); % Total number of epochs
+    
+    %% Get true sleep stages
+    % Recode stage 1 (N4) to stage 2 (N3) per AASM guidelines
+    stages(stages == 1) = 2;
+    
+    % Convert 1s annotations into dominant 30s epoch labels using the function
+    %raw data has 1 stage per second, convert to find dominate sleep stage per epoch
+    sleepStages_perEpoch = getDominantEpochStage(stages, Fs, 30); % Now dominate sleep stage is assigned as epoch sleep stage true value
+    
+    % Ensure sleep stages are properly categorized
+    sleepStages_perEpoch = categorical(sleepStages_perEpoch);
 
- 
+
     % Set number of epochs to process (e.g., 10 epochs = 5 minutes)
     %numEpochsToPlot = 500; % First 10 epochs (adjustable)
-    numEpochsToPlot = numEpochs; % Whole signal
+    numEpochsToPlot = min(numEpochs, length(sleepStages_perEpoch)); % Whole signal % Prevent out-of-bounds indexing
+
+
 
     % disp(['Size of stages array: ', num2str(size(stages))]); % Check how many values exist
     % disp(['First 50 sleep stages: ', num2str(stages(1:min(50, length(stages))))]);
@@ -386,7 +399,7 @@ for subj = subjectIDs
 
     
         if length(fiducialsInEpoch) < 2
-            fprintf("Epoch %d skipped (only %d RR peaks)\n", epoch, length(fiducialsInEpoch));
+            %fprintf("Epoch %d skipped (only %d RR peaks)\n", epoch, length(fiducialsInEpoch));
             continue;
         end
     
@@ -562,28 +575,14 @@ for subj = subjectIDs
 %% Extract features and true sleep stages
 
 
-    % Recode stage 1 (N4) to stage 2 (N3) per AASM guidelines
-    stages(stages == 1) = 2;
-
-    % Pre-allocate
-    sleepStages_perEpoch = strings(1, numEpochsToPlot);  % use strings for labels
-    
-    % Convert 1s annotations into dominant 30s epoch labels using the function
-    %raw data has 1 stage per second, convert to find dominate sleep stage per epoch
-    sleepStages_perEpoch = getDominantEpochStage(stages, Fs, 30); % Now dominate sleep stage is assigned as epoch sleep stage true value
-    
-    % Ensure sleep stages are properly categorized
-    sleepStages_perEpoch = categorical(sleepStages_perEpoch); 
-    % Ensure sleepStages_perEpoch only includes the selected epochs
-    sleepStages_perEpoch = sleepStages_perEpoch(1:numEpochsToPlot); % Trim to match feature count
+    % % Ensure sleepStages_perEpoch only includes the selected epochs
+    % sleepStages_perEpoch = sleepStages_perEpoch(1:numEpochsToPlot); % Trim to match feature count
 
     % Print first few sleep stage values for verification
     %disp(table((1:numEpochsToPlot)', sleepStages_perEpoch(1:numEpochsToPlot)', 'VariableNames', {'Epoch', 'SleepStage'}));
 
     % Print the first 10 sleep stage values from the original signal
     %disp(['First 10 sleep stages from the original signal: ', num2str(stages(1:min(10, length(stages))))]);
-
-   
 
     for epoch = 1:numEpochsToPlot
         stageVal = str2double(string(sleepStages_perEpoch(epoch))); % Convert categorical safely
@@ -607,8 +606,8 @@ for subj = subjectIDs
             end
         end
     end
-    
-    %disp(table((1:numEpochsToPlot)', sleepStages_perEpoch(1:numEpochsToPlot)', 'VariableNames', {'Epoch', 'SleepStage'}));
+        
+    disp(table((1:numEpochsToPlot)', sleepStages_perEpoch(1:numEpochsToPlot)', 'VariableNames', {'Epoch', 'SleepStage'}));
    
     % Convert feature vectors to columns
     featureTable = table( ...
@@ -634,7 +633,7 @@ for subj = subjectIDs
     %     'VariableNames', {'MeanRR', 'SDNN', 'pNN50', 'RMSSD', 'HR', 'SD1', 'SD2', 'SDRatio', 'VLF Power','LF Power', 'HF Power', 'LF/HF Ratio' ,'SleepStage'});
 
     % save as MAT
-    save(sprintf('%sS%d_Features.mat', FeatureFolder, subj), 'featureTable');
+    save(sprintf('%sS%d_ECGFeatures.mat', FeatureFolder, subj), 'featureTable');
 
 
     % disp(['Size of stages: ', num2str(size(stages))]); % Verify total count
