@@ -17,3 +17,4 @@ function epochStages = getDominantEpochStage(stages, Fs, epochLen)
         epochStages(epoch) = min(dominateStage);
     end
 end
+
