@@ -1,0 +1,170 @@
+clc; close all; clear;
+subjectIDs = 1:10; 
+dataFolder = 'Data/';
+EMGFeatureFolder = 'EMGFeatures/';
+allFeatures = [];
+
+for subj = subjectIDs
+    edfFilename = sprintf('%sR%d.edf', dataFolder, subj);
+    xmlFilename = sprintf('%sR%d.xml', dataFolder, subj);
+    [hdr, record] = edfread(edfFilename);
+    [events, stages, epochLength, annotation] = readXML(xmlFilename);
+
+    emgIndex = find(contains(hdr.label, 'EMG', 'IgnoreCase', true));
+    if isempty(emgIndex), fprintf('EMG not found for %s\n', edfFilename); 
+        continue; 
+    end
+
+    Fs = hdr.samples(emgIndex);
+    numEpochs = 100%floor(length(record(emgIndex, :)) / (30 * Fs));
+
+    %% Get true sleep stages
+    % Recode stage 1 (N4) to stage 2 (N3) per AASM guidelines
+    stages(stages == 1) = 2;
+    
+    % Convert 1s annotations into dominant 30s epoch labels using the function
+    %raw data has 1 stage per second, convert to find dominate sleep stage per epoch
+    sleepStages_perEpoch = getDominantEpochStage(stages, Fs, 30); % Now dominate sleep stage is assigned as epoch sleep stage true value
+    
+    % Ensure sleep stages are properly categorized
+    sleepStages_perEpoch = categorical(sleepStages_perEpoch);
+
+    numEpochsToPlot = min(numEpochs, length(sleepStages_perEpoch)); % Whole signal % Prevent out-of-bounds indexing
+
+
+    for epoch = 1:numEpochsToPlot
+        startIdx = (epoch - 1) * Fs * 30 + 1;
+        endIdx = startIdx + 30 * Fs - 1;
+        signal = record(emgIndex, startIdx:endIdx);
+
+        %% Method 1: Standard Filtering
+        [b, a] = butter(4, 10/(Fs/2), 'high');
+        filtered1 = filtfilt(b, a, signal);
+        d = designfilt('bandstopiir', 'FilterOrder', 2, 'HalfPowerFrequency1', 49, 'HalfPowerFrequency2', 51, 'SampleRate', Fs);
+        filtered1 = filtfilt(d, filtered1);
+        filtered1 = medfilt1(filtered1, 5); % Motion artifact removal
+
+        %% Method 2: Adaptive Noise Removal
+        % High-pass filter
+        [b, a] = butter(4, 10/(Fs/2), 'high');
+        filtered2 = filtfilt(b, a, signal);
+        % Adaptive Moving Average
+        windowSize = round(Fs * 0.1); % 100ms window
+        filtered2 = movmean(filtered2, windowSize);
+        % (Optional) ICA if multi-signal available
+        % icaFiltered = fastica(filtered2);
+
+        %% Comparison
+
+        % % snr1 = snr(filtered1);
+        % % snr2 = snr(filtered2);
+        % % fprintf('SNR for Standard Filtering: %.2f dB\n', snr1);
+        % % fprintf('SNR for Adaptive Filtering: %.2f dB\n', snr2);
+        % % 
+        % % [pxx1, f] = pwelch(filtered1, [], [], [], Fs);
+        % % [pxx2, ~] = pwelch(filtered2, [], [], [], Fs);
+        % % figure; 
+        % % plot(f, 10*log10(pxx1), 'b'); 
+        % % hold on;
+        % % plot(f, 10*log10(pxx2), 'r'); 
+        % % xlabel('frequency (Hz)')
+        % % ylabel('power (dB)')
+        % % title('Power Spectral Density (PSD) Comparison')
+        % % legend('Standard Filtering', 'Adaptive Filtering');
+        % % 
+        % % 
+        % % %% Plot Comparison
+        % % figure;
+        % % subplot(3,1,1); plot(signal); title(sprintf('Raw EMG - R%d Epoch %d', subj, epoch));
+        % % subplot(3,1,2); plot(filtered1); title('Approach 1: Standard Filtering');
+        % % subplot(3,1,3); plot(filtered2); title('Approach 2: Adaptive Filtering');
+        % % 
+        %pause(1);
+    end
+
+    featureMatrix = []; % Preallocate feature storage
+
+    for epoch = 1:numEpochsToPlot
+        startIdx = (epoch - 1) * Fs * 30 + 1;
+        endIdx = startIdx + 30 * Fs - 1;
+        signal = record(emgIndex, startIdx:endIdx);
+
+        %% 🔹 1. Bandpass Filtering (Preserves Muscle Activity)
+        % [b, a] = butter(4, [20 450] / (Fs / 2), 'bandpass');
+        % filteredEMG = filtfilt(b, a, signal);
+        filteredEMG = filtered1;
+
+        %% 🔹 2. Envelope Extraction Using RMS
+        windowSize = round(Fs * 0.1); % 100ms window
+        EMG_envelope = sqrt(movmean(filteredEMG.^2, windowSize)); % RMS smoothing
+
+        %% 🔹 3. Artifact Removal Using Z-score Thresholding
+        zEMG = zscore(EMG_envelope);
+        artifactThreshold = 3; % Adjust based on signal characteristics
+        EMG_clean = EMG_envelope(abs(zEMG) < artifactThreshold);
+
+        %% 🔹 4. Feature Extraction for Sleep Scoring
+        meanEMG = mean(EMG_clean); % Average muscle activity
+        varianceEMG = var(EMG_clean); % Signal variability
+        zeroCrossings = sum(diff(sign(EMG_clean)) ~= 0); % Count muscle bursts
+
+        % Spectral Features (Power in Low and High-Frequency Bands)
+        [pxx, f] = pwelch(EMG_clean, [], [], [], Fs);
+        emgPowerLF = sum(pxx(f < 100)); % Low-frequency muscle activation (<100Hz)
+        emgPowerHF = sum(pxx(f > 100 & f < 450)); % High-frequency bursts
+
+        %% 🔹 5. Store Features for Later Analysis
+        featureMatrix = [featureMatrix; meanEMG, varianceEMG, zeroCrossings, emgPowerLF, emgPowerHF];
+
+        % (Optional) Debugging visualization
+        if epoch <= 3 % Plot first few epochs
+            figure;
+            subplot(3,1,1); plot(signal); title(sprintf('Raw EMG - R%d Epoch %d', subj, epoch));
+            subplot(3,1,2); plot(filteredEMG); title('Filtered EMG');
+            subplot(3,1,3); plot(EMG_clean); title('Clean EMG Envelope');
+        end
+    end
+
+    % % Ensure sleepStages_perEpoch only includes the selected epochs
+    sleepStages_perEpoch = sleepStages_perEpoch(1:numEpochsToPlot); % Trim to match feature count
+
+    for epoch = 1:numEpochsToPlot
+        stageVal = str2double(string(sleepStages_perEpoch(epoch))); % Convert categorical safely
+    
+        if isnan(stageVal) % Catch any NaN cases
+            sleepStages_perEpoch(epoch) = categorical("Unknown");
+        else
+            switch stageVal
+                case 0
+                    sleepStages_perEpoch(epoch) = categorical("REM");
+                case 2
+                    sleepStages_perEpoch(epoch) = categorical("N3");
+                case 3
+                    sleepStages_perEpoch(epoch) = categorical("N2");
+                case 4
+                    sleepStages_perEpoch(epoch) = categorical("N1");
+                case 5
+                    sleepStages_perEpoch(epoch) = categorical("Wake");
+                otherwise
+                    sleepStages_perEpoch(epoch) = categorical("Unknown");
+            end
+        end
+    end
+        
+    disp(table((1:numEpochsToPlot)', sleepStages_perEpoch(1:numEpochsToPlot)', 'VariableNames', {'Epoch', 'SleepStage'}));
+   
+
+    %% 🔹 Convert Feature Matrix to Table for Sleep Stage Classification
+    featureTable = table( ...
+    featureMatrix(:,1), ... % Mean EMG
+    featureMatrix(:,2), ... % Variance EMG
+    featureMatrix(:,3), ... % Zero crossings
+    featureMatrix(:,4), ... % Low-frequency power
+    featureMatrix(:,5), ... % High-frequency power
+    categorical(sleepStages_perEpoch(:)), ...  % Sleep stage labels
+    'VariableNames', {'MeanEMG', 'VarianceEMG', 'ZeroCrossings', 'EMG_LF_Power', 'EMG_HF_Power', 'SleepStage'});
+
+    %% 🔹 Save Features for Further Analysis
+    save(sprintf('%sS%d_EMG_Features.mat', EMGFeatureFolder, subj), 'featureTable');
+end
+
