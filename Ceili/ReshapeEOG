@@ -1,0 +1,30 @@
+% Load EOG feature table
+EOGdata = readtable('Reduced_EOG_Features_Table.csv');
+
+% Convert PatientID column to string for filtering
+EOGdata.PatientID = string(EOGdata.PatientID);
+
+% Separate Subject 5 before processing
+EOGTestData = EOGdata(EOGdata.PatientID == "5", :);
+EOGTrainData = EOGdata(EOGdata.PatientID ~= "5", :);
+
+% Remove unnecessary columns
+EOGTrainData.PatientID = [];
+EOGTrainData.Epoch = [];
+EOGTrainData.Stage = [];
+
+EOGTestData.PatientID = [];
+EOGTestData.Epoch = [];
+EOGTestData.Stage = [];
+
+% Add prefix "EOG_" to feature names
+EOGTrainData.Properties.VariableNames = strcat("EOG_", EOGTrainData.Properties.VariableNames);
+EOGTestData.Properties.VariableNames = strcat("EOG_", EOGTestData.Properties.VariableNames);
+
+% Save the corrected datasets
+writetable(EOGTrainData, 'EOG_Train_Except5.csv');
+writetable(EOGTestData, 'EOG_Test_Subject5.csv');
+
+fprintf('EOG feature tables successfully updated with prefixes and saved!\n');
+fprintf('Training set size: [%d x %d]\n', size(EOGTrainData, 1), size(EOGTrainData, 2));
+fprintf('Test set size: [%d x %d]\n', size(EOGTestData, 1), size(EOGTestData, 2));
