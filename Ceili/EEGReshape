@@ -1,0 +1,68 @@
+% Load EEG feature table
+EEGdata = readtable('all_EEG_features_v2.csv');
+
+% Convert Subject column to string for proper filtering
+EEGdata.Subject = string(EEGdata.Subject);
+
+% Separate Subject 5 before processing
+EEGTestData = EEGdata(EEGdata.Subject == "S5", :);
+EEGTrainData = EEGdata(EEGdata.Subject ~= "S5", :);
+
+% Remove non-numeric columns
+EEGTrainData.Subject = [];
+EEGTestData.Subject = [];
+EEGTrainData.SleepStage = [];
+EEGTestData.SleepStage = [];
+EEGTrainData.DataType = [];
+EEGTestData.DataType = [];
+
+% Convert training and testing tables to arrays
+EEGTrainArray = table2array(EEGTrainData);
+EEGTestArray = table2array(EEGTestData);
+
+% Identify row pairs per subject
+numEpochsTrain = size(EEGTrainData, 1) / 2; % EEGsec_Features are stacked under EEG_Features
+numEpochsTest = size(EEGTestData, 1) / 2;   % Separate Test Epochs
+
+% Initialize new combined feature arrays
+EEGTrainCombinedArray = nan(numEpochsTrain, 64); % 64 features per epoch
+EEGTestCombinedArray = nan(numEpochsTest, 64);   % 64 features per epoch
+
+% Process training set
+for i = 1:numEpochsTrain
+    idx1 = (i-1) * 2 + 1; % EEG_Features row
+    idx2 = idx1 + 1;       % EEGsec_Features row
+    
+    EEGTrainCombinedArray(i, :) = [EEGTrainArray(idx1, :), EEGTrainArray(idx2, :)]; % Merge horizontally
+end
+
+% Process test set (Subject 5)
+for i = 1:numEpochsTest
+    idx1 = (i-1) * 2 + 1; % EEG_Features row
+    idx2 = idx1 + 1;       % EEGsec_Features row
+    
+    EEGTestCombinedArray(i, :) = [EEGTestArray(idx1, :), EEGTestArray(idx2, :)]; % Merge horizontally
+end
+
+% Extract column names and rename EEG feature set
+EEGfeatNames = strcat("EEG_", EEGTrainData.Properties.VariableNames(1:32)); % Prefix EEG Features
+EEGsecNames = strcat("EEGsec_", EEGTrainData.Properties.VariableNames(1:32)); % Prefix EEGsec Features
+
+% Ensure column name count matches the number of features in EEGTrainCombinedArray
+numFeatures = size(EEGTrainCombinedArray, 2); % Total columns in the array
+
+% Concatenating and verifying correct size
+if length([EEGfeatNames, EEGsecNames]) == numFeatures
+    EEGTrainCombined = array2table(EEGTrainCombinedArray, 'VariableNames', [EEGfeatNames, EEGsecNames]);
+    EEGTestCombined = array2table(EEGTestCombinedArray, 'VariableNames', [EEGfeatNames, EEGsecNames]);
+else
+    error('Mismatch in feature names and column count. Check variable naming.');
+end
+
+
+writetable(EEGTrainCombined, 'EEG_Train_Except5.csv');
+writetable(EEGTestCombined, 'EEG_Test_Subject5.csv');
+
+fprintf('EEG feature tables successfully reshaped and saved!\n');
+fprintf('Training set size: [%d x %d]\n', size(EEGTrainCombined, 1), size(EEGTrainCombined, 2));
+fprintf('Test set size: [%d x %d]\n', size(EEGTestCombined, 1), size(EEGTestCombined, 2));
