@@ -1,0 +1,40 @@
+%% Load Feature Tables
+% Load ECG feature tables (only to extract SleepStage)
+ECGTrainData = load('AllSubjects_Except5_FeatureTable.mat');
+ECGTrainData = ECGTrainData.ECGallDataTable;
+ECGTestData = load('TestSubject5_FeatureTable.mat');
+ECGTestData = ECGTestData.ECGTestDataTable;
+
+% Load EEG feature tables
+EEGTrainData = readtable('EEG_Train_Except5.csv');
+EEGTestData = readtable('EEG_Test_Subject5.csv');
+
+% Load EOG feature tables
+EOGTrainData = readtable('EOG_Train_Except5.csv');
+EOGTestData = readtable('EOG_Test_Subject5.csv');
+
+%% Merge Data
+% Ensure consistency in row counts before merging EEG and EOG
+if size(EEGTrainData, 1) ~= size(EOGTrainData, 1)
+    error('Mismatch in row sizes for training data. Ensure EEG and EOG tables have the same number of rows.');
+end
+
+if size(EEGTestData, 1) ~= size(EOGTestData, 1)
+    error('Mismatch in row sizes for test data. Ensure EEG and EOG tables have the same number of rows.');
+end
+
+% Concatenate EEG and EOG features for training and test sets
+EEG_EOGTrainDataMerged = [EEGTrainData, EOGTrainData]; % Merge EEG and EOG
+EEG_EOGTrainDataMerged.SleepStage = ECGTrainData.SleepStage; % Keep SleepStage from ECG
+
+EEG_EOGTestDataMerged = [EEGTestData, EOGTestData]; % Merge EEG and EOG
+EEG_EOGTestDataMerged.SleepStage = ECGTestData.SleepStage; % Keep SleepStage from ECG
+
+%% Save Merged Data
+save('EEG_EOG_Except5_FeatureTable.mat', 'EEG_EOGTrainDataMerged');
+save('EEG_EOG_TestSubject5_FeatureTable.mat', 'EEG_EOGTestDataMerged');
+
+%% Print dataset info
+fprintf('EEG & EOG feature tables successfully merged and saved!\n');
+fprintf('Training set size: [%d x %d]\n', size(EEG_EOGTrainDataMerged, 1), size(EEG_EOGTrainDataMerged, 2));
+fprintf('Test set size: [%d x %d]\n', size(EEG_EOGTestDataMerged, 1), size(EEG_EOGTestDataMerged, 2));
