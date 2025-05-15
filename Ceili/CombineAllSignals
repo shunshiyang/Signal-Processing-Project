@@ -1,0 +1,40 @@
+
+%% Load Feature Tables
+% Load ECG feature tables
+ECGTrainData = load('AllSubjects_Except5_FeatureTable.mat');
+ECGTrainData = ECGTrainData.ECGallDataTable;
+ECGTestData = load('TestSubject5_FeatureTable.mat');
+ECGTestData = ECGTestData.ECGTestDataTable;
+
+% Load EEG feature tables
+EEGTrainData = readtable('EEG_Train_Except5.csv');
+EEGTestData = readtable('EEG_Test_Subject5.csv');
+
+% Load EOG feature tables
+EOGTrainData = readtable('EOG_Train_Except5.csv');
+EOGTestData = readtable('EOG_Test_Subject5.csv');
+
+%% Merge Data
+% Ensure consistency in row counts before merging
+if size(ECGTrainData, 1) ~= size(EEGTrainData, 1) || size(ECGTrainData, 1) ~= size(EOGTrainData, 1)
+    error('Mismatch in row sizes for training data. Ensure all tables have the same number of rows.');
+end
+
+if size(ECGTestData, 1) ~= size(EEGTestData, 1) || size(ECGTestData, 1) ~= size(EOGTestData, 1)
+    error('Mismatch in row sizes for test data. Ensure all tables have the same number of rows.');
+end
+
+% Concatenate all features for training and test sets
+TrainDataMerged = [ECGTrainData(:, 1:end-1), EEGTrainData, EOGTrainData]; % Exclude SleepStage temporarily
+TrainDataMerged.SleepStage = ECGTrainData.SleepStage; % Add SleepStage back
+
+TestDataMerged = [ECGTestData(:, 1:end-1), EEGTestData, EOGTestData]; % Exclude SleepStage temporarily
+TestDataMerged.SleepStage = ECGTestData.SleepStage; % Add SleepStage back
+
+%% Save Merged Data
+save('AllSignals_Except5_FeatureTable.mat', 'TrainDataMerged');
+save('TestSubject5_AllSignals_FeatureTable.mat', 'TestDataMerged');
+
+fprintf('Merged feature tables successfully saved!\n');
+fprintf('Training set size: [%d x %d]\n', size(TrainDataMerged, 1), size(TrainDataMerged, 2));
+fprintf('Test set size: [%d x %d]\n', size(TestDataMerged, 1), size(TestDataMerged, 2));
