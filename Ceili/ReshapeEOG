@@ -1,21 +1,22 @@
-% Load EOG feature table
-EOGdata = readtable('Reduced_EOG_Features_Table.csv');
+% Load EOG feature table from .mat file
+loadedData = load('Reduced_EOG_Features_Table.mat'); % Load the .mat file
+EOGdata = loadedData.T_new; % Extract the actual table from the struct
 
-% Convert PatientID column to string for filtering
-EOGdata.PatientID = string(EOGdata.PatientID);
+% Convert PatientID column to string for filtering (Make sure it exists)
+if ismember('PatientID', EOGdata.Properties.VariableNames)
+    EOGdata.PatientID = string(EOGdata.PatientID);
+else
+    error('Column "PatientID" not found in the dataset. Check the variable names.');
+end
 
 % Separate Subject 5 before processing
 EOGTestData = EOGdata(EOGdata.PatientID == "5", :);
 EOGTrainData = EOGdata(EOGdata.PatientID ~= "5", :);
 
-% Remove unnecessary columns
-EOGTrainData.PatientID = [];
-EOGTrainData.Epoch = [];
-EOGTrainData.Stage = [];
-
-EOGTestData.PatientID = [];
-EOGTestData.Epoch = [];
-EOGTestData.Stage = [];
+% Remove unnecessary columns (Check if they exist before removing)
+columnsToRemove = {'PatientID', 'Epoch', 'Stage'};
+EOGTrainData(:, intersect(columnsToRemove, EOGTrainData.Properties.VariableNames)) = [];
+EOGTestData(:, intersect(columnsToRemove, EOGTestData.Properties.VariableNames)) = [];
 
 % Add prefix "EOG_" to feature names
 EOGTrainData.Properties.VariableNames = strcat("EOG_", EOGTrainData.Properties.VariableNames);
@@ -25,6 +26,7 @@ EOGTestData.Properties.VariableNames = strcat("EOG_", EOGTestData.Properties.Var
 writetable(EOGTrainData, 'EOG_Train_Except5.csv');
 writetable(EOGTestData, 'EOG_Test_Subject5.csv');
 
+% Print dataset info for verification
 fprintf('EOG feature tables successfully updated with prefixes and saved!\n');
 fprintf('Training set size: [%d x %d]\n', size(EOGTrainData, 1), size(EOGTrainData, 2));
 fprintf('Test set size: [%d x %d]\n', size(EOGTestData, 1), size(EOGTestData, 2));
