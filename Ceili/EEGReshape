@@ -1,57 +1,50 @@
-% Load EEG feature table
-EEGdata = readtable('all_EEG_features_v2.csv');
+%% Load EEG Feature Table from .mat file
+loadedData = load('AllSubjects_EEG_FeatureTable.mat'); % Load the .mat file
+EEGdata = loadedData.mergedTable; % Extract the actual table from the struct
 
-% Convert Subject column to string for proper filtering
-EEGdata.Subject = string(EEGdata.Subject);
-
-% Separate Subject 5 before processing
-EEGTestData = EEGdata(EEGdata.Subject == "S5", :);
-EEGTrainData = EEGdata(EEGdata.Subject ~= "S5", :);
-
-% Remove non-numeric columns
-EEGTrainData.Subject = [];
-EEGTestData.Subject = [];
-EEGTrainData.SleepStage = [];
-EEGTestData.SleepStage = [];
-EEGTrainData.DataType = [];
-EEGTestData.DataType = [];
-
-% Convert training and testing tables to arrays
-EEGTrainArray = table2array(EEGTrainData);
-EEGTestArray = table2array(EEGTestData);
-
-% Identify row pairs per subject
-numEpochsTrain = size(EEGTrainData, 1) / 2; % EEGsec_Features are stacked under EEG_Features
-numEpochsTest = size(EEGTestData, 1) / 2;   % Separate Test Epochs
-
-% Initialize new combined feature arrays
-EEGTrainCombinedArray = nan(numEpochsTrain, 64); % 64 features per epoch
-EEGTestCombinedArray = nan(numEpochsTest, 64);   % 64 features per epoch
-
-% Process training set
-for i = 1:numEpochsTrain
-    idx1 = (i-1) * 2 + 1; % EEG_Features row
-    idx2 = idx1 + 1;       % EEGsec_Features row
-    
-    EEGTrainCombinedArray(i, :) = [EEGTrainArray(idx1, :), EEGTrainArray(idx2, :)]; % Merge horizontally
+% Convert Source column to string to ensure proper filtering
+if ismember('Source', EEGdata.Properties.VariableNames)
+    EEGdata.Source = string(EEGdata.Source);
+else
+    error('Column "Source" not found in the dataset. Check the variable names.');
 end
 
-% Process test set (Subject 5)
-for i = 1:numEpochsTest
-    idx1 = (i-1) * 2 + 1; % EEG_Features row
-    idx2 = idx1 + 1;       % EEGsec_Features row
-    
-    EEGTestCombinedArray(i, :) = [EEGTestArray(idx1, :), EEGTestArray(idx2, :)]; % Merge horizontally
+%% **Step 1: Separate Subject 5 Before Removing "Source"**
+EEGTestData = EEGdata(contains(EEGdata.Source, 'S5'), :); % Test set (Subject 5)
+EEGTrainData = EEGdata(~contains(EEGdata.Source, 'S5'), :); % Training set (Other subjects)
+
+%% **Step 2: Separate EEG and EEGsec Tables for Sorting**
+EEGTrainTable = EEGTrainData(contains(EEGTrainData.Source, '_EEG_Features'), :);
+EEGsecTrainTable = EEGTrainData(contains(EEGTrainData.Source, '_EEGsec_Features'), :);
+
+EEGTestTable = EEGTestData(contains(EEGTestData.Source, '_EEG_Features'), :);
+EEGsecTestTable = EEGTestData(contains(EEGTestData.Source, '_EEGsec_Features'), :);
+
+% Ensure the number of rows match before merging
+if size(EEGTrainTable, 1) ~= size(EEGsecTrainTable, 1) || size(EEGTestTable, 1) ~= size(EEGsecTestTable, 1)
+    error('Mismatch in row counts between EEG and EEGsec tables. Check table structure.');
 end
 
-% Extract column names and rename EEG feature set
-EEGfeatNames = strcat("EEG_", EEGTrainData.Properties.VariableNames(1:32)); % Prefix EEG Features
-EEGsecNames = strcat("EEGsec_", EEGTrainData.Properties.VariableNames(1:32)); % Prefix EEGsec Features
+%% **Step 3: Remove "Source" Column AFTER Separating Subject 5**
+EEGTrainTable.Source = [];
+EEGsecTrainTable.Source = [];
+EEGTestTable.Source = [];
+EEGsecTestTable.Source = [];
+EEGTrainTable.SleepStage = [];
+EEGsecTrainTable.SleepStage = [];
+EEGTestTable.SleepStage = [];
+EEGsecTestTable.SleepStage = [];
 
-% Ensure column name count matches the number of features in EEGTrainCombinedArray
-numFeatures = size(EEGTrainCombinedArray, 2); % Total columns in the array
+%% **Step 4: Merge EEG and EEGsec Features Horizontally**
+EEGTrainCombinedArray = [table2array(EEGTrainTable), table2array(EEGsecTrainTable)];
+EEGTestCombinedArray = [table2array(EEGTestTable), table2array(EEGsecTestTable)];
 
-% Concatenating and verifying correct size
+%% **Step 5: Rename Features**
+EEGfeatNames = strcat("EEG_", EEGTrainTable.Properties.VariableNames);
+EEGsecNames = strcat("EEGsec_", EEGsecTrainTable.Properties.VariableNames);
+
+% Verify feature count matches before finalizing
+numFeatures = size(EEGTrainCombinedArray, 2);
 if length([EEGfeatNames, EEGsecNames]) == numFeatures
     EEGTrainCombined = array2table(EEGTrainCombinedArray, 'VariableNames', [EEGfeatNames, EEGsecNames]);
     EEGTestCombined = array2table(EEGTestCombinedArray, 'VariableNames', [EEGfeatNames, EEGsecNames]);
@@ -59,10 +52,11 @@ else
     error('Mismatch in feature names and column count. Check variable naming.');
 end
 
+%% **Step 6: Save Merged Data**
+save('EEG_Train_Except5.mat', 'EEGTrainCombined');
+save('EEG_Test_Subject5.mat', 'EEGTestCombined');
 
-writetable(EEGTrainCombined, 'EEG_Train_Except5.csv');
-writetable(EEGTestCombined, 'EEG_Test_Subject5.csv');
-
+%% **Step 7: Print Summary**
 fprintf('EEG feature tables successfully reshaped and saved!\n');
 fprintf('Training set size: [%d x %d]\n', size(EEGTrainCombined, 1), size(EEGTrainCombined, 2));
 fprintf('Test set size: [%d x %d]\n', size(EEGTestCombined, 1), size(EEGTestCombined, 2));
