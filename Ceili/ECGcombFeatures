@@ -1,5 +1,3 @@
-%clc; clear; close all;
-
 %% Settings
 numSubjects = 10;
 featureFolder = "Features\"; % make sure this matches your save path
@@ -7,6 +5,8 @@ featureFolder = "Features\"; % make sure this matches your save path
 % Initialize containers
 allFeatures_adp = [];
 allLabels = [];
+testFeatures = [];
+testLabels = [];
 
 %% Loop through all subjects
 for subj = 1:numSubjects
@@ -22,29 +22,39 @@ for subj = 1:numSubjects
         features_ecg = table2array(featureTable(:, 1:end-1));  % all but last column
         labels_ecg = table2array(featureTable(:, end));        % last column (SleepStage)
 
-        % Concatenate across subjects
-        allFeatures_adp = [allFeatures_adp; features_ecg];
-        allLabels = [allLabels; labels_ecg];
-
-        fprintf('Loaded Subject %d | Features: [%d x %d]\n', subj, size(features_ecg));
+        % Separate one Subject into test set, rest go into training set
+        if subj == 5
+            testFeatures = features_ecg;
+            testLabels = labels_ecg;
+            fprintf('Subject %d stored in test set | Features: [%d x %d]\n', subj, size(features_ecg));
+        else
+            allFeatures_adp = [allFeatures_adp; features_ecg];
+            allLabels = [allLabels; labels_ecg];
+            fprintf('Loaded Subject %d into training set | Features: [%d x %d]\n', subj, size(features_ecg));
+        end
     else
         warning('%s not found. Skipping...', ecgFile);
     end
-    % disp(['Size of labels for Subject ', num2str(subj), ': ', num2str(size(labels_ecg))]);
-    % 
-    % disp(['Size of features for Subject ', num2str(subj), ': ', num2str(size(features_ecg))]);
-
-    
 end
 
-% Combine features and labels into a table
-allDataTable = array2table(allFeatures_adp, ...
-    'VariableNames', featureTable.Properties.VariableNames(1:end-1));  % use same feature names
+%% Create Data Tables
+% Prefix all ECG feature names
+ECGfeatNames = strcat("ECG_", featureTable.Properties.VariableNames(1:end-1));
 
-% Add the categorical labels column
-allDataTable.SleepStage = allLabels;
+% Training set (Subjects 1-4, 6-10)
+ECGallDataTable = array2table(allFeatures_adp, ...
+    'VariableNames', ECGfeatNames); % Use prefixed names
+ECGallDataTable.SleepStage = allLabels; % Add SleepStage separately
+save('AllSubjects_Except5_FeatureTable.mat', 'ECGallDataTable');
 
-%disp(allDataTable(1:10, :)); % Print first 10 rows
-% Save the table
-save('AllSubjects_FeatureTable.mat', 'allDataTable');
+% Test set (Subject 5)
+ECGTestDataTable = array2table(testFeatures, ...
+    'VariableNames', ECGfeatNames); % Use prefixed names
+ECGTestDataTable.SleepStage = testLabels; % Add SleepStage separately
+save('TestSubject5_FeatureTable.mat', 'ECGTestDataTable');
+
+fprintf('ECG feature tables successfully updated with prefixes and saved!\n');
+fprintf('Training set size: [%d x %d]\n', size(ECGallDataTable, 1), size(ECGallDataTable, 2));
+fprintf('Test set size: [%d x %d]\n', size(ECGTestDataTable, 1), size(ECGTestDataTable, 2));
+
 
