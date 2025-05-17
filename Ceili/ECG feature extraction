@@ -12,11 +12,11 @@ for subj = subjectIDs
     xmlFilename = sprintf('%sR%d.xml', dataFolder, subj);
     [hdr, record] = edfread(edfFilename);
     [events, stages, epochLength, annotation] = readXML(xmlFilename);
-
     %% Plot Control
     toPlotFiltering = false;  
     toPlotRR_QRS = false;
     toPlotRRAnalysis = false;
+    toPlotPeaks = false;
 
     % Locate ECG Channels
     ecg_indices = find(contains(hdr.label, 'ECG', 'IgnoreCase', true)); % Get indices of ECG channels
@@ -43,7 +43,7 @@ for subj = subjectIDs
 
 
     % Set number of epochs to process (e.g., 10 epochs = 5 minutes)
-    %numEpochsToPlot = 500; % First 10 epochs (adjustable)
+    %numEpochsToPlot = 50; % First 10 epochs (adjustable)
     numEpochsToPlot = min(numEpochs, length(sleepStages_perEpoch)); % Whole signal % Prevent out-of-bounds indexing
 
 
@@ -68,6 +68,7 @@ for subj = subjectIDs
     combinedRawECG = [];
     combined_avg_filter = [];
     combined_Butterworth_filter = [];
+    combined_envelope = [];
 
     %% Preprocessing Loop
     for epoch = 1:numEpochsToPlot
@@ -125,7 +126,7 @@ for subj = subjectIDs
        
       %% STEP 3:
       %% 50 Hz Power Line-Frequency Noise Suppression
-      %Should be 50 or 60? check
+      
 
         notchFilter = designfilt('bandstopiir', 'FilterOrder', 2, ...
                                  'HalfPowerFrequency1', 49, ...
@@ -156,10 +157,30 @@ for subj = subjectIDs
         % filteredECG_Artifact_Wavelet_avg = wdenoise(filteredECG_Notch_avg, decompLevel, 'Wavelet', waveletType);
         % filteredECG_Artifact_Wavelet_butter = wdenoise(filteredECG_Notch_butter, decompLevel, 'Wavelet', waveletType);
 
+        % ECG_segment = combined_Butterworth_filter(startIdx:endIdx);
+
+        %% Envelope filter for clear QRS signal 
+        ECG_segment = filteredECG_Artifact_SG_butter;
+        
+
+        lowCutoff = 5;  % Lower bound to remove drift
+        highCutoff = 25; % Upper bound to isolate QRS components
+        filterOrder = 4;
+        [b, a] = butter(filterOrder, [lowCutoff, highCutoff] / (Fs/2), 'bandpass');
+
+
+        ECG_filtered = filtfilt(b, a, ECG_segment); % Apply bandpass filter first
+
+
+        ECG_envelope = movmax(abs(hilbert(ECG_filtered)), round(0.1 * Fs)); % Now apply envelope
+
         %% Concatenate Signals for Continuous Output
         combinedRawECG = [combinedRawECG; signalECG(:)];
         combined_avg_filter = [combined_avg_filter; filteredECG_Artifact_SG_avg(:)];
         combined_Butterworth_filter = [combined_Butterworth_filter; filteredECG_Artifact_SG_butter(:)];
+        combined_envelope = [combined_envelope; ECG_envelope(:)];
+
+
     end
 
 
@@ -173,27 +194,35 @@ for subj = subjectIDs
         snrECG = snr(combinedRawECG);
         snrAvgECG = snr(combined_avg_filter);
         snrButterworthECG = snr(combined_Butterworth_filter);
+        snrEnvelopeECG = snr(combined_envelope);
         fprintf('ECG - SNR (Standard Filtering): %.2f dB\n', snrECG);
         fprintf('ECG - SNR (Standard Filtering): %.2f dB\n', snrAvgECG);
         fprintf('ECG - SNR (Adaptive Filtering): %.2f dB\n', snrButterworthECG);
+        fprintf('ECG - SNR (Adaptive  Filtering): %.2f dB\n', snrEnvelopeECG);
     
         %% Plot Comparison
         figure;
-        subplot(3,1,1);
+        subplot(4,1,1);
         plot(t, combinedRawECG);
         title('Raw ECG Signal');
         xlabel('Time (s)');
         ylabel('Amplitude');
     
-        subplot(3,1,2);
+        subplot(4,1,2);
         plot(t, combined_avg_filter);
         title('Moving Average Filtered ECG Signal');
         xlabel('Time (s)');
         ylabel('Amplitude');
     
-        subplot(3,1,3);
+        subplot(4,1,3);
         plot(t, combined_Butterworth_filter);
         title('Butterworth Filtered ECG Signal');
+        xlabel('Time (s)');
+        ylabel('Amplitude');
+    
+        subplot(4,1,4);
+        plot(t, combined_envelope);
+        title('Enveloped Filtered ECG Signal');
         xlabel('Time (s)');
         ylabel('Amplitude');
     
@@ -212,6 +241,8 @@ for subj = subjectIDs
         legend('Moving Average Filtering', 'ButterworthFiltering');
     end
 
+
+
     %% Feature Extraction
 
     %% Step 1: Time Domain
@@ -228,7 +259,10 @@ for subj = subjectIDs
     [b, a] = butter(filterOrder, [lowCutoff, highCutoff] / (Fs/2), 'bandpass');
     
     % Apply zero-phase filtering
-    filteredECG_Bandpass = filtfilt(b, a, combined_avg_filter);
+    % filteredECG_Bandpass = filtfilt(b, a, combined_avg_filter);
+    filteredECG_Bandpass = filtfilt(b, a, combined_Butterworth_filter);
+    % filteredECG_Bandpass = filtfilt(b, a, combined_envelope);
+    
 
     % Step2: Derivative and Squaring
 
@@ -365,27 +399,67 @@ for subj = subjectIDs
     end
 
     %% Feature 3: Mean RR Interval per Epoch
-    meanRR_perEpoch = NaN(1, numEpochsToPlot); % Initialize with NaNs for empty epochs
+    QRS_meanRR_perEpoch = NaN(1, numEpochsToPlot); % Initialize with NaNs for empty epochs
     
     %% Feature 4: SDNN (Standard deveation of RR per epoch)
-    sdnn_perEpoch = NaN(1, numEpochsToPlot); % Initialize with NaNs
+    QRS_sdnn_perEpoch = NaN(1, numEpochsToPlot); % Initialize with NaNs
     
     %% Feature 5: pNN50 (percent of consecutive RR intervals differing by more than 50ms)
     %Higher pNN50 values suggest greater parasympathetic activity, often linked to deep sleep.
     %Lower values indicate reduced short-term HRV, common in stress or wakeful states.
-    pNN50_perEpoch = NaN(1, numEpochsToPlot); % Initialize with NaNs
+    QRS_pNN50_perEpoch = NaN(1, numEpochsToPlot); % Initialize with NaNs
 
     %% Feature 6: RMSSD (Root mean square of successive RR differences)
     %higher RMSSD suggests greater parasympathetic activity which is more common in deep sleep
-    rmssd_perEpoch = NaN(1, numEpochsToPlot);
+    QRS_rmssd_perEpoch = NaN(1, numEpochsToPlot);
 
     %% Feature 7: Heart Rate
-    hr_perEpoch = NaN(1, numEpochsToPlot); % Initialize array
+    QRS_hr_perEpoch = NaN(1, numEpochsToPlot); % Initialize array
 
     %% Feature 8: Poincare Features per epoch (short term, long term RR variability and ratio)
-    sd1_perEpoch = NaN(1, numEpochsToPlot);
-    sd2_perEpoch = NaN(1, numEpochsToPlot);
-    sdRatio_perEpoch = NaN(1, numEpochsToPlot);
+    QRS_sd1_perEpoch = NaN(1, numEpochsToPlot);
+    QRS_sd2_perEpoch = NaN(1, numEpochsToPlot);
+    QRS_sdRatio_perEpoch = NaN(1, numEpochsToPlot);
+
+
+
+   
+
+    %% Feature 13: Rpeaks
+    rPeaks_perEpoch = cell(1, numEpochsToPlot); 
+
+
+
+    meanECG = NaN(1, numEpochsToPlot);
+    varianceECG = NaN(1, numEpochsToPlot);
+    entropyECG = NaN(1, numEpochsToPlot);
+    
+    hr_perEpoch = NaN(1, numEpochsToPlot);
+    sdnn_perEpoch = NaN(1, numEpochsToPlot);
+    rmssd_perEpoch = NaN(1, numEpochsToPlot);
+
+    pNN50_perEpoch = NaN(1, numEpochsToPlot);
+    sd1 = NaN(1, numEpochsToPlot);
+    sd2 = NaN(1, numEpochsToPlot);
+    sdRatio = NaN(1, numEpochsToPlot);
+
+    lf_power_perEpoch = NaN(1, numEpochsToPlot);
+    hf_power_perEpoch = NaN(1, numEpochsToPlot);
+    lf_hf_ratio_perEpoch = NaN(1, numEpochsToPlot);
+
+    qrsWidth = NaN(1, numEpochsToPlot);
+    qrsAmplitude = NaN(1, numEpochsToPlot);
+    tWaveRatio_perEpoch = NaN(1, numEpochsToPlot);
+
+    
+    skewnessECG_perEpoch = NaN(1, numEpochsToPlot);
+    kurtosisECG_perEpoch = NaN(1, numEpochsToPlot);
+    spectralEntropy_perEpoch = NaN(1, numEpochsToPlot);
+    dominantFreq_perEpoch = NaN(1, numEpochsToPlot);
+    lf_power_envelope_perEpoch = NaN(1, numEpochsToPlot);
+    hf_power_envelope_perEpoch = NaN(1, numEpochsToPlot);
+    lf_hf_ratio_envelope_perEpoch = NaN(1, numEpochsToPlot);
+    bandwidth_perEpoch = NaN(1, numEpochsToPlot);
 
     % --- Epoch-based Feature Extraction ---
 
@@ -399,86 +473,205 @@ for subj = subjectIDs
 
     
         if length(fiducialsInEpoch) < 2
-            %fprintf("Epoch %d skipped (only %d RR peaks)\n", epoch, length(fiducialsInEpoch));
+            % fprintf("Epoch %d skipped (only %d RR peaks)\n", epoch, length(fiducialsInEpoch));
             continue;
         end
     
         rr = diff(fiducialsInEpoch) / Fs;
     
         % Store features
-        meanRR_perEpoch(epoch) = mean(rr);
-        sdnn_perEpoch(epoch) = std(rr);
-        pNN50_perEpoch(epoch) = sum(abs(diff(rr)) > 0.05) / length(rr) * 100;
-        rmssd_perEpoch(epoch) = sqrt(mean(diff(rr).^2));
-        hr_perEpoch(epoch) = 60 / mean(rr);
+        QRS_meanRR_perEpoch(epoch) = mean(rr);
+        QRS_sdnn_perEpoch(epoch) = std(rr);
+        QRS_pNN50_perEpoch(epoch) = sum(abs(diff(rr)) > 0.05) / length(rr) * 100;
+        QRS_rmssd_perEpoch(epoch) = sqrt(mean(diff(rr).^2));
+        QRS_hr_perEpoch(epoch) = 60 / mean(rr);
     
         % Poincaré features
-        rr1 = rr(1:end-1);
-        rr2 = rr(2:end);
-        sd1 = sqrt(0.5 * std(rr2 - rr1)^2);
-        sd2 = sqrt(0.5 * std(rr2 + rr1)^2);
-        sd1_perEpoch(epoch) = sd1;
-        sd2_perEpoch(epoch) = sd2;
-        sdRatio_perEpoch(epoch) = sd2 / sd1;
+        QRS_rr1 = rr(1:end-1);
+        QRS_rr2 = rr(2:end);
+        QRS_sd1 = sqrt(0.5 * std(QRS_rr2 - QRS_rr1)^2);
+        QRS_sd2 = sqrt(0.5 * std(QRS_rr2 + QRS_rr1)^2);
+        QRS_sd1_perEpoch(epoch) = QRS_sd1;
+        QRS_sd2_perEpoch(epoch) = QRS_sd2;
+        QRS_sdRatio_perEpoch(epoch) = QRS_sd2 / QRS_sd1;
     
         %fprintf("Epoch %d: HR = %.1f bpm, RR count = %d\n", epoch, hr_perEpoch(epoch), length(rr));
+
+        %Raw signal based feature extraction
+
+    % Extract segment for current epoch
+
+        ECG_envelope = combined_envelope(startIdx:endIdx);
+
+        adaptiveHeight = 0.5 * median(ECG_envelope);  
+        adaptiveProminence = 0.3 * std(ECG_envelope);  
+        
+        [pks, rPeaks] = findpeaks(ECG_envelope, 'MinPeakHeight', adaptiveHeight, ...
+                                  'MinPeakProminence', adaptiveProminence, ...
+                                  'MinPeakDistance', round(0.5 * Fs));
+
+
+        % % Compute dynamic threshold based on signal amplitude
+        % adaptiveHeight = 0.6 * max(ECG_envelope); 
+        % adaptiveProminence = 0.3 * std(ECG_envelope);
+        % 
+        % % Find peaks using adaptive values
+        % [pks, rPeaks] = findpeaks(ECG_envelope, 'MinPeakHeight', adaptiveHeight, ...
+        %                           'MinPeakProminence', adaptiveProminence, ...
+        %                           'MinPeakDistance', round(0.5 * Fs));
+        % 
+        % % Detect R-peaks within this epoch
+        % [~, rPeaks] = findpeaks(ECG_envelope, 'MinPeakHeight', max(ECG_envelope) * 0.6);   
+
+        % Store peaks in an array if needed
+        rPeaks_perEpoch{epoch} = rPeaks;
+
+        meanECG(epoch) = mean(ECG_envelope);  % Average ECG amplitude
+        varianceECG(epoch) = var(ECG_envelope); % Signal variability
+        entropyECG(epoch) = wentropy(ECG_envelope, 'shannon'); % Measure of signal complexity
+
+        rrIntervals = diff(rPeaks) / Fs;  % Convert samples to seconds
+        hr_perEpoch(epoch) = 60 ./ mean(rrIntervals);  % Beats per minute
+        sdnn_perEpoch(epoch) = std(rrIntervals);
+        rmssd_perEpoch(epoch) = sqrt(mean(diff(rrIntervals).^2));
+        pNN50_perEpoch(epoch) = sum(abs(diff(rrIntervals)) > 0.05) / length(rrIntervals) * 100;
+
+        rr1 = rrIntervals(1:end-1);
+        rr2 = rrIntervals(2:end);
+        
+        sd1(epoch) = sqrt(0.5 * std(rr2 - rr1)^2);
+        sd2(epoch) = sqrt(0.5 * std(rr2 + rr1)^2);
+        sdRatio(epoch) = sd2(epoch) / sd1(epoch);
+        
+        % Ensure `rPeaks` and `rrIntervals` are correctly sized
+        validPeaks = rPeaks(1:end-1); % Remove last peak to match `rrIntervals`
+        
+        % Interpolation
+        Fs_interp = 4; % Standard HRV frequency
+        t_interp = min(validPeaks)/Fs : 1/Fs_interp : max(validPeaks)/Fs; % Match size
+        rr_interp = interp1(validPeaks/Fs, rrIntervals, t_interp, 'spline');
+                
+        [psd, freq] = pwelch(rr_interp, [], [], [], Fs_interp);
+        lf_power = bandpower(psd, freq, [0.04, 0.15], 'psd');
+        hf_power = bandpower(psd, freq, [0.15, 0.4], 'psd');
+        lf_hf_ratio = lf_power / hf_power;
+
+        lf_power_perEpoch(epoch) = lf_power;
+        hf_power_perEpoch(epoch) = hf_power;
+        lf_hf_ratio_perEpoch(epoch) = lf_hf_ratio; 
+
+        qrsWidth(epoch) = mean(diff(rPeaks)); % Average peak-to-peak width
+        qrsAmplitude(epoch) = mean(ECG_envelope(rPeaks)); % Mean R-peak amplitude
+
+        % Define the typical T-wave window (starts ~200ms after R-peak)
+        tWindow = round(0.2 * Fs); % 200ms in samples
+        
+        % Initialize storage
+        tWaveAmplitudes = NaN(size(rPeaks)); 
+        
+        for i = 1:length(rPeaks)
+            tStart = min(rPeaks(i) + tWindow, length(ECG_envelope)); % Ensure index is valid
+            tEnd = min(rPeaks(i) + 2*tWindow, length(ECG_envelope)); % Define search range
+        
+            % Find max value within this T-wave region
+            if tStart < tEnd
+                [tWaveAmp, tWaveIdx] = max(ECG_envelope(tStart:tEnd));
+                tWaveAmplitudes(i) = tWaveAmp; % Store amplitude
+            end
+        end
+        
+        % Compute T-wave ratio (T-wave amplitude / R-peak amplitude)
+        if any(isnan(tWaveAmplitudes))
+            tWaveRatio_perEpoch(epoch) = nanmean(tWaveAmplitudes) / nanmean(ECG_envelope(rPeaks));
+        else
+            tWaveRatio_perEpoch(epoch) = mean(tWaveAmplitudes) / mean(ECG_envelope(rPeaks));
+        end
+
+        % Extract envelope signal for current epoch
+        ECG_envelope_epoch = combined_envelope(startIdx:endIdx);
+    
+        % Compute time-domain features
+        skewnessECG_perEpoch(epoch) = skewness(ECG_envelope_epoch);
+        kurtosisECG_perEpoch(epoch) = kurtosis(ECG_envelope_epoch);
+    
+        % Compute spectral features
+        [psd_envelope, freq_envelope] = pwelch(ECG_envelope_epoch, [], [], [], Fs);
+    
+        spectralEntropy_perEpoch(epoch) = wentropy(psd_envelope, 'shannon');
+    
+        [~, peakIdx] = max(psd_envelope);
+        dominantFreq_perEpoch(epoch) = freq_envelope(peakIdx);
+    
+        lf_power_envelope_perEpoch(epoch) = bandpower(psd_envelope, freq_envelope, [0.04, 0.15], 'psd');
+        hf_power_envelope_perEpoch(epoch) = bandpower(psd_envelope, freq_envelope, [0.15, 0.4], 'psd');
+        lf_hf_ratio_envelope_perEpoch(epoch) = lf_power_envelope_perEpoch(epoch) / hf_power_envelope_perEpoch(epoch);
+    
+        bandwidth_perEpoch(epoch) = obw(ECG_envelope_epoch, Fs);
+
+
+        if toPlotPeaks
+            figure;
+            plot(ECG_envelope, 'b'); hold on;
+            plot(rPeaks, ECG_envelope(rPeaks), 'ro', 'MarkerFaceColor', 'r'); % Highlight peaks
+            title(['Epoch ', num2str(epoch), ' - R-Peak Detection']);
+            xlabel('Time (samples)');
+            ylabel('Amplitude');
+        end
     end
-
-
-
+    %figure; plot(skewnessECG_perEpoch, '-o'); title('Skewness Over Epochs');
 
     if toPlotRRAnalysis
         % Display and plot the results
-        disp(['Mean RR Interval Per Epoch: ', num2str(meanRR_perEpoch)]);
+        disp(['Mean RR Interval Per Epoch: ', num2str(QRS_meanRR_perEpoch)]);
         disp(['NumEpochs: ', num2str(numEpochsToPlot)]);
         figure;
-        plot(meanRR_perEpoch, '-o', 'MarkerFaceColor', 'b'); 
+        plot(QRS_meanRR_perEpoch, '-o', 'MarkerFaceColor', 'b'); 
         title('Mean RR Interval Per Epoch');
         xlabel('Epoch Number');
         ylabel('Mean RR Interval (sec)');
         grid on;
 
         % Display and plot results
-        disp(['SDNN Per Epoch: ', num2str(sdnn_perEpoch)]);
+        disp(['SDNN Per Epoch: ', num2str(QRS_sdnn_perEpoch)]);
         figure;
-        plot(sdnn_perEpoch, '-o', 'MarkerFaceColor', 'r');
+        plot(QRS_sdnn_perEpoch, '-o', 'MarkerFaceColor', 'r');
         title('SDNN Per Epoch');
         xlabel('Epoch Number');
         ylabel('SDNN (sec)');
         grid on;
 
         % Display and plot results
-        disp(['pNN50 Per Epoch: ', num2str(pNN50_perEpoch)]);
+        disp(['pNN50 Per Epoch: ', num2str(QRS_pNN50_perEpoch)]);
         figure;
-        plot(pNN50_perEpoch, '-o', 'MarkerFaceColor', 'g');
+        plot(QRS_pNN50_perEpoch, '-o', 'MarkerFaceColor', 'g');
         title('pNN50 Per Epoch');
         xlabel('Epoch Number');
         ylabel('pNN50 (%)');
         grid on;
 
         % Display and plot results
-        disp(['RMSSD Per Epoch: ', num2str(rmssd_perEpoch)]);
+        disp(['RMSSD Per Epoch: ', num2str(QRS_rmssd_perEpoch)]);
         figure;
-        plot(rmssd_perEpoch, '-o', 'MarkerFaceColor', 'm');
+        plot(QRS_rmssd_perEpoch, '-o', 'MarkerFaceColor', 'm');
         title('RMSSD Per Epoch');
         xlabel('Epoch Number');
         ylabel('RMSSD (sec)');
         grid on;
 
         % Display and plot results
-        disp(['SD1 Per Epoch: ', num2str(sd1_perEpoch)]);
-        disp(['SD2 Per Epoch: ', num2str(sd2_perEpoch)]);
-        disp(['SD1/SD2 Ratio Per Epoch: ', num2str(sdRatio_perEpoch)]);
+        disp(['SD1 Per Epoch: ', num2str(QRS_sd1_perEpoch)]);
+        disp(['SD2 Per Epoch: ', num2str(QRS_sd2_perEpoch)]);
+        disp(['SD1/SD2 Ratio Per Epoch: ', num2str(QRS_sdRatio_perEpoch)]);
         figure;
-        subplot(3,1,1); plot(sd1_perEpoch, '-o', 'MarkerFaceColor', 'b'); title('SD1 Per Epoch'); ylabel('SD1');
-        subplot(3,1,2); plot(sd2_perEpoch, '-o', 'MarkerFaceColor', 'r'); title('SD2 Per Epoch'); ylabel('SD2');
-        subplot(3,1,3); plot(sdRatio_perEpoch, '-o', 'MarkerFaceColor', 'g'); title('SD1/SD2 Ratio Per Epoch'); xlabel('Epoch Number'); ylabel('Ratio');
+        subplot(3,1,1); plot(QRS_sd1_perEpoch, '-o', 'MarkerFaceColor', 'b'); title('SD1 Per Epoch'); ylabel('SD1');
+        subplot(3,1,2); plot(QRS_sd2_perEpoch, '-o', 'MarkerFaceColor', 'r'); title('SD2 Per Epoch'); ylabel('SD2');
+        subplot(3,1,3); plot(QRS_sdRatio_perEpoch, '-o', 'MarkerFaceColor', 'g'); title('SD1/SD2 Ratio Per Epoch'); xlabel('Epoch Number'); ylabel('Ratio');
         grid on;
 
             % Display and plot results
-        disp(['Heart Rate Per Epoch: ', num2str(hr_perEpoch)]);
+        disp(['Heart Rate Per Epoch: ', num2str(QRS_hr_perEpoch)]);
         figure;
-        plot(hr_perEpoch, '-o', 'MarkerFaceColor', 'c'); 
+        plot(QRS_hr_perEpoch, '-o', 'MarkerFaceColor', 'c'); 
         title('Heart Rate Per Epoch');
         xlabel('Epoch Number');
         ylabel('Heart Rate (BPM)');
@@ -496,15 +689,15 @@ for subj = subjectIDs
     %% Welch (good this is what he wants)
     % Initialize arrays for storing LF/HF power per epoch
     % Frequency bands for HRV analysis
-    vlf_band = [0.003, 0.04];
-    lf_band = [0.04, 0.15];
-    hf_band = [0.15, 0.4];
+    QRS_vlf_band = [0.003, 0.04];
+    QRS_lf_band = [0.04, 0.15];
+    QRS_hf_band = [0.15, 0.4];
     
     % Initialize arrays for frequency-domain features
-    vlf_power_perEpoch = NaN(1, numEpochsToPlot);
-    lf_power_perEpoch = NaN(1, numEpochsToPlot);
-    hf_power_perEpoch = NaN(1, numEpochsToPlot);
-    lf_hf_ratio_perEpoch = NaN(1, numEpochsToPlot);
+    QRS_vlf_power_perEpoch = NaN(1, numEpochsToPlot);
+    QRS_lf_power_perEpoch = NaN(1, numEpochsToPlot);
+    QRS_hf_power_perEpoch = NaN(1, numEpochsToPlot);
+    QRS_lf_hf_ratio_perEpoch = NaN(1, numEpochsToPlot);
     
     for epoch = 1:numEpochsToPlot
         startIdx = (epoch - 1) * 30 * Fs + 1;
@@ -533,15 +726,15 @@ for subj = subjectIDs
         [psd, freq] = pwelch(rr_interp, [], [], [], Fs_interp);
     
         % Compute band powers
-        vlf_power = bandpower(psd, freq, vlf_band, 'psd');
-        lf_power = bandpower(psd, freq, lf_band, 'psd');
-        hf_power = bandpower(psd, freq, hf_band, 'psd');
+        QRS_vlf_power = bandpower(psd, freq, QRS_vlf_band, 'psd');
+        QRS_lf_power = bandpower(psd, freq, QRS_lf_band, 'psd');
+        QRS_hf_power = bandpower(psd, freq, QRS_hf_band, 'psd');
     
         % Store features
-        vlf_power_perEpoch(epoch) = vlf_power;
-        lf_power_perEpoch(epoch) = lf_power;
-        hf_power_perEpoch(epoch) = hf_power;
-        lf_hf_ratio_perEpoch(epoch) = lf_power / hf_power;
+        QRS_vlf_power_perEpoch(epoch) = QRS_vlf_power;
+        QRS_lf_power_perEpoch(epoch) = QRS_lf_power;
+        QRS_hf_power_perEpoch(epoch) = QRS_hf_power;
+        QRS_lf_hf_ratio_perEpoch(epoch) = QRS_lf_power / QRS_hf_power;
     end
 
     % figure;
@@ -555,12 +748,12 @@ for subj = subjectIDs
 
     figure;
     tiledlayout(3,2)
-    nexttile; plot(meanRR_perEpoch); title('Mean RR');
-    nexttile; plot(hr_perEpoch); title('HR');
-    nexttile; plot(sdnn_perEpoch); title('SDNN');
-    nexttile; plot(rmssd_perEpoch); title('RMSSD');
-    nexttile; plot(pNN50_perEpoch); title('pNN50');
-    nexttile; plot(sdRatio_perEpoch); title('SDRatio');
+    nexttile; plot(QRS_meanRR_perEpoch); title('Mean RR');
+    nexttile; plot(QRS_hr_perEpoch); title('HR');
+    nexttile; plot(QRS_sdnn_perEpoch); title('SDNN');
+    nexttile; plot(QRS_rmssd_perEpoch); title('RMSSD');
+    nexttile; plot(QRS_pNN50_perEpoch); title('pNN50');
+    nexttile; plot(QRS_sdRatio_perEpoch); title('SDRatio');
 
 
 
@@ -575,18 +768,18 @@ for subj = subjectIDs
 %% Extract features and true sleep stages
 
 
-    % % Ensure sleepStages_perEpoch only includes the selected epochs
-    % sleepStages_perEpoch = sleepStages_perEpoch(1:numEpochsToPlot); % Trim to match feature count
+    % Ensure sleepStages_perEpoch only includes the selected epochs
+    sleepStages_perEpoch = sleepStages_perEpoch(1:numEpochsToPlot); % Trim to match feature count
 
-    % Print first few sleep stage values for verification
+    %Print first few sleep stage values for verification
     %disp(table((1:numEpochsToPlot)', sleepStages_perEpoch(1:numEpochsToPlot)', 'VariableNames', {'Epoch', 'SleepStage'}));
 
-    % Print the first 10 sleep stage values from the original signal
+    %Print the first 10 sleep stage values from the original signal
     %disp(['First 10 sleep stages from the original signal: ', num2str(stages(1:min(10, length(stages))))]);
 
     for epoch = 1:numEpochsToPlot
         stageVal = str2double(string(sleepStages_perEpoch(epoch))); % Convert categorical safely
-    
+
         if isnan(stageVal) % Catch any NaN cases
             sleepStages_perEpoch(epoch) = categorical("Unknown");
         else
@@ -606,27 +799,77 @@ for subj = subjectIDs
             end
         end
     end
-        
+
     disp(table((1:numEpochsToPlot)', sleepStages_perEpoch(1:numEpochsToPlot)', 'VariableNames', {'Epoch', 'SleepStage'}));
-   
+
+    % % Convert feature vectors to columns
+    % featureTable = table( ...
+    %     QRS_meanRR_perEpoch(:), ...
+    %     QRS_sdnn_perEpoch(:), ...
+    %     QRS_pNN50_perEpoch(:), ...
+    %     QRS_rmssd_perEpoch(:), ...
+    %     QRS_hr_perEpoch(:), ...
+    %     QRS_sd1_perEpoch(:), ...
+    %     QRS_sd2_perEpoch(:), ...
+    %     QRS_sdRatio_perEpoch(:), ...
+    %     QRS_vlf_power_perEpoch(:), ...
+    %     QRS_lf_power_perEpoch(:), ...
+    %     QRS_hf_power_perEpoch(:), ...
+    %     QRS_lf_hf_ratio_perEpoch(:), ...
+    %     categorical(sleepStages_perEpoch(:)), ...  % descriptive stage names
+    %     'VariableNames', {'MeanRR', 'SDNN', 'pNN50', 'RMSSD', 'HR', ...
+    %                       'SD1', 'SD2', 'SDRatio', 'VLF Power', 'LF Power', ...
+    %                       'HF Power', 'LF/HF Ratio', 'SleepStage'});
+
     % Convert feature vectors to columns
     featureTable = table( ...
-        meanRR_perEpoch(:), ...
-        sdnn_perEpoch(:), ...
-        pNN50_perEpoch(:), ...
-        rmssd_perEpoch(:), ...
+        QRS_meanRR_perEpoch(:), ...
+        QRS_sdnn_perEpoch(:), ...
+        QRS_pNN50_perEpoch(:), ...
+        QRS_rmssd_perEpoch(:), ...
+        QRS_hr_perEpoch(:), ...
+        QRS_sd1_perEpoch(:), ...
+        QRS_sd2_perEpoch(:), ...
+        QRS_sdRatio_perEpoch(:), ...
+        QRS_vlf_power_perEpoch(:), ...
+        QRS_lf_power_perEpoch(:), ...
+        QRS_hf_power_perEpoch(:), ...
+        QRS_lf_hf_ratio_perEpoch(:), ...
+        meanECG(:), ...
+        varianceECG(:), ...
+        entropyECG(:), ...
         hr_perEpoch(:), ...
-        sd1_perEpoch(:), ...
-        sd2_perEpoch(:), ...
-        sdRatio_perEpoch(:), ...
-        vlf_power_perEpoch(:), ...
+        sdnn_perEpoch(:), ...
+        rmssd_perEpoch(:), ...
+        pNN50_perEpoch(:), ...
+        sd1(:), ...
+        sd2(:), ...
+        sdRatio(:), ...
         lf_power_perEpoch(:), ...
         hf_power_perEpoch(:), ...
         lf_hf_ratio_perEpoch(:), ...
-        categorical(sleepStages_perEpoch(:)), ...  % descriptive stage names
-        'VariableNames', {'MeanRR', 'SDNN', 'pNN50', 'RMSSD', 'HR', ...
-                          'SD1', 'SD2', 'SDRatio', 'VLF Power', 'LF Power', ...
-                          'HF Power', 'LF/HF Ratio', 'SleepStage'});
+        qrsWidth(:), ...
+        qrsAmplitude(:), ... 
+        tWaveRatio_perEpoch(:), ...
+        skewnessECG_perEpoch(:), ... 
+        kurtosisECG_perEpoch(:), ...
+        spectralEntropy_perEpoch(:), ... 
+        dominantFreq_perEpoch(:), ...
+        lf_power_envelope_perEpoch(:), ...
+        hf_power_envelope_perEpoch(:), ...
+        lf_hf_ratio_envelope_perEpoch(:), ...
+        bandwidth_perEpoch(:), ...
+        categorical(sleepStages_perEpoch(:)), ...  % Sleep stage labels
+        'VariableNames', {'RR-int MeanRR', 'RR-int SDNN', 'RR-int pNN50', 'RR-int RMSSD', 'RR-int HR', ...
+                          'RR-int SD1', 'RR-int SD2', 'RR-int SDRatio', 'RR-int VLF Power', 'RR-int LF Power', ...
+                          'RR-int HF Power', 'RR-int LF/HF Ratio', ...
+                          'MeanECG', 'VarianceECG', 'EntropyECG', 'HR per Epoch', 'SDNN', 'RMSSD', 'pNN50', ...
+                          'SD1', 'SD2', 'SDRatio', ...
+                          'LF Power', 'HF Power', 'LF/HF Ratio ', ...
+                          'QRS Width', 'QRS Amplitude', 'T-Wave Ratio', ...
+                          'Skewness ECG', 'Kurtosis ECG', 'Spectral Entropy', 'Dominant Frequency', ...
+                          'LF Power Envelope', 'HF Power Envelope', 'LF/HF Ratio Envelope', 'Bandwidth', ...
+                          'SleepStage'});
 
     % % Create a table with meaningful column names
     % featureTable = array2table(featuresMatrix, ...
